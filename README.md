@@ -111,17 +111,27 @@ npm run preview
 
 ### 1. 情绪分析端点
 
-HTTP
-POST /api/emo_analysis
-Content-Type: application/json
+**接口说明**：提交文本进行情绪识别并获取 AI 回复。
 
-```Request:
+* **URL**: `/api/emo_analysis`
+* **Method**: `POST`
+* **Content-Type**: `application/json`
+
+#### 请求参数 (Request)
+
+```json
 {
   "text": "最近压力很大，工作太累了",
   "mode": "smart",
   "history": [
-    {"role": "user", "content": "..."},
-    {"role": "assistant", "content": "..."}
+    {
+      "role": "user",
+      "content": "..."
+    },
+    {
+      "role": "assistant",
+      "content": "..."
+    }
   ]
 }
 
