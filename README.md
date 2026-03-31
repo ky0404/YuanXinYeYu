@@ -1,4 +1,4 @@
-# 元心叶语 - 温柔情绪陪伴站
+# 媛心烨语 - 温柔情绪陪伴站
 
 > 💗 你说一句，我就认真接住一句。
 > 
@@ -36,11 +36,10 @@
 ---
 
 ## 🏗️ 技术架构
+### 前端架构
 
 ### 前端架构
 React 19 + TypeScript ↓ Ant Design 6.x (UI组件) ↓ Vite (构建工具，<500ms热更新) ↓ 自定义CSS (玻璃态特效 + 渐变)
-
-Code
 
 **关键技术点**：
 - 状态管理：React Hooks（useState, useRef, useEffect）
@@ -51,8 +50,6 @@ Code
 ### 后端架构
 FastAPI (异步框架) ↓ ├─ auth_route.py (JWT认证) ├─ emo_route.py (NLP情感分析) └─ history_route.py (数据持久化) ↓ Core/analysis.py (sentence-transformers) ↓ 数据库 (用户/对话存储)
 
-Code
-
 **关键技术点**：
 - 异步处理：async/await全链路
 - 模型推理：预训练句子向量化
@@ -61,8 +58,6 @@ Code
 
 ### NLP流水线
 用户输入文本 ↓ 分词 + 清洗 ↓ sentence-transformers (多语言编码) ↓ 情感分类模型 (负向/正向/中性/复杂) ↓ 关键词提取 + 建议生成 ↓ 返回JSON (emotion, score, reply, guide)
-
-Code
 
 ---
 
@@ -90,15 +85,12 @@ pip install fastapi uvicorn python-dotenv sentencepiece transformers
 # 启动服务器 (localhost:8000)
 python api/main.py
 环境变量 (.env)：
-
-Code
 ENV=dev
 APP_NAME=YuanXinYeYu
 APP_VERSION=1.0.0
 CORS_ORIGINS=["http://localhost:5173","http://localhost:3000"]
 DATABASE_URL=sqlite:///app.db
 前端启动
-bash
 cd frontend_core
 
 # 安装依赖
