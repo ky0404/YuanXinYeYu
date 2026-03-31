@@ -1,9 +1,6 @@
-Let me retrieve the current README first, then provide you with the complete, properly formatted version:
-
-根据你的完整 README 文本，我发现问题了。让我为你生成一份**完全修复、格式规范的 README.md**：
 
 ```markdown
-# 💗 元心叶语 - 温柔情绪陪伴站
+# 💗 媛心烨语 - 温柔情绪陪伴站
 
 > 你说一句，我就认真接住一句。
 > 
