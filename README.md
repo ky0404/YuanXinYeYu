@@ -107,13 +107,11 @@ npm run preview
 
 ---
 
-## 📚 API 文档
+ API 文档
+1. 情绪分析端点
+请求：
 
-### 1. 情绪分析端点
-
-**请求**：
-
-```http
+HTTP
 POST /api/emo_analysis HTTP/1.1
 Content-Type: application/json
 
@@ -125,7 +123,6 @@ Content-Type: application/json
     {"role": "assistant", "content": "..."}
   ]
 }
-```
 
 **响应** (HTTP 200)：
 
