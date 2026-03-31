@@ -107,14 +107,13 @@ npm run preview
 
 ---
 
- API 文档
+📚 API 文档
 1. 情绪分析端点
-请求：
-
 HTTP
-POST /api/emo_analysis HTTP/1.1
+POST /api/emo_analysis
 Content-Type: application/json
 
+Request:
 {
   "text": "最近压力很大，工作太累了",
   "mode": "smart",
