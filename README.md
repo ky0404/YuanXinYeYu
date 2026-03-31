@@ -107,8 +107,9 @@ npm run preview
 
 ---
 
-📚 API 文档
-1. 情绪分析端点
+## 📚 API 文档
+### 1. 情绪分析端点
+
 HTTP
 POST /api/emo_analysis
 Content-Type: application/json
