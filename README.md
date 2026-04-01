@@ -76,7 +76,7 @@ YuanXinYeYu/
 
 ### 3. 📘 专业版 README.md
 
-```markdown
+
 # 媛心烨语 · AI 情绪陪伴与心理疏导系统
 
 > 🌸 温婉如媛，明亮如烨 —— 一个懂你情绪、陪你聊天的心灵 AI 伴侣。
@@ -261,5 +261,3 @@ npm run dev
 
 © 2026 YuanXinYeYu Team — 愿每一份情绪都被温柔接住 💗
 ```
-
----
