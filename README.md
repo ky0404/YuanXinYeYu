@@ -197,23 +197,74 @@ npm run dev
 
 #### 📁 目录结构简略图
 ```
-YuanXinYeYu/
-│
-├── backend_core/                 # 后端 Python 模块
-│   ├── api/                      # FastAPI 路由（auth, emo, history）
-│   ├── core/                     # 情绪分析主逻辑 (调用 NLP / RAG)
-│   ├── models/                   # SQLAlchemy ORM 模型
-│   ├── service/                  # 外部服务(Huawei NLP, RAG 检索)
-│   ├── utils/                    # 工具类(请求、响应、鉴权、日志)
-│   ├── config/                   # 环境变量 & 日志设置
-│   └── main.py                   # 启动入口
-│
-├── frontend_core/                # 前端 React 应用
-│   ├── src/                      # 主界面与组件
-│   ├── tsconfig.*                # TS 配置
-│   └── vite.config.ts            # Vite 打包配置
-│
-└── data/models/                  # 本地嵌入模型缓存 (MiniLM)
+Directory structure:
+└── ky0404-yuanxinyeyu/
+    ├── README.md
+    ├── LICENSE
+    ├── backend_core/
+    │   ├── main.py
+    │   ├── api/
+    │   │   ├── __init__.py
+    │   │   ├── main.py
+    │   │   └── routes/
+    │   │       ├── __init__.py
+    │   │       ├── auth_route.py
+    │   │       ├── emo_route.py
+    │   │       └── history_route.py
+    │   ├── config/
+    │   │   ├── __init__.py
+    │   │   ├── logging_config.py
+    │   │   └── settings.py
+    │   ├── core/
+    │   │   ├── __init__.py
+    │   │   └── analysis.py
+    │   ├── data/
+    │   │   └── models/
+    │   │       └── models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/
+    │   │           └── blobs/
+    │   │               ├── 2ea7ad0e45a9d1d1591782ba7e29a703d0758831
+    │   │               ├── 3c1b565ae10a15a1d0c31096f834af2fd9359e91
+    │   │               ├── 5fd10429389515d3e5cccdeda08cae5fea1ae82e
+    │   │               ├── 6bedb7f3622d56b7020f33ab93f6996d33242043
+    │   │               ├── b974b349cb2d419ada11181750a733ff82f291ad
+    │   │               ├── c06d5b49495f044e6380e68a60538be17a6bd5d1
+    │   │               └── d1514c3162bbe87b343f565fadc62e6c06f04f03
+    │   ├── knowledge/
+    │   │   ├── emotion_knowledge.py
+    │   │   └── knowledge__init__.py
+    │   ├── models/
+    │   │   ├── __init__.py
+    │   │   ├── database.py
+    │   │   ├── emotion_record.py
+    │   │   ├── guest_quota.py
+    │   │   └── user.py
+    │   ├── scripts/
+    │   │   └── build_knowledge_db.py
+    │   ├── service/
+    │   │   ├── __init__.py
+    │   │   ├── huawei_nlp.py
+    │   │   └── rag_service.py
+    │   └── utils/
+    │       ├── __init__.py
+    │       ├── auth.py
+    │       ├── request.py
+    │       └── response.py
+    └── frontend_core/
+        ├── README.md
+        ├── cookies.txt
+        ├── eslint.config.js
+        ├── index.html
+        ├── package.json
+        ├── tsconfig.app.json
+        ├── tsconfig.json
+        ├── tsconfig.node.json
+        ├── vite.config.ts
+        └── src/
+            ├── App.css
+            ├── App.tsx
+            ├── index.css
+            └── main.tsx
+
 ```
 
 ---
