@@ -164,8 +164,6 @@ npm run dev
 
 ---
 
----
-
 ## 🧩 知识库与向量检索模块
 
 ### 📚 情感知识库（`backend_core/knowledge/emotion_knowledge.py`）
@@ -195,7 +193,7 @@ npm run dev
 ```bash
 cd backend_core
 python scripts/build_knowledge_db.py
-
+```
 ---
 
 ### 1. 核心功能与技术栈
