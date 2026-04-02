@@ -163,6 +163,39 @@ npm run dev
   - 向量模型与知识库均可离线加载，无需外网。
 
 ---
+
+---
+
+## 🧩 知识库与向量检索模块
+
+### 📚 情感知识库（`backend_core/knowledge/emotion_knowledge.py`）
+- 内置 **学生群体专属心理与情感知识库 v2.0**；
+- 覆盖主题：  
+  `学业压力`、`宿舍与人际`、`恋爱与情感`、`就业与未来`、`心理健康`、`家庭关系`、`自我成长`、`生活压力`、`积极心理`；
+- 每条知识条目包含字段：
+  - `id`、`category`、`topic`、`keywords`
+  - `content`（心理学分析）
+  - `advice`（可行动建议）
+  - `dialogue_example`（人性化回复示例）
+  - 新增 `audience` (目标人群)、`emotion_type` (情绪类型)、`risk_level` (风险等级) 等元数据；
+- 支持 `_normalize_entry()` 归一化函数和 `KEYWORD_INDEX` 快速关键词索引；
+- 为 RAG 模块提供心理学知识上下文输入，帮助 LLM 生成更具人情味的共情回复。
+
+### 🧠 知识库初始化脚本（`backend_core/scripts/build_knowledge_db.py`）
+- 作用：一次性构建 **ChromaDB 向量数据库**；
+- 自动：
+  1. 检查依赖 `chromadb` 和 `sentence-transformers`；
+  2. 读取 `emotion_knowledge.py` 中 `KNOWLEDGE_BASE`；
+  3. 生成文本嵌入并写入本地向量库 `data/chroma_db/`；
+  4. 默认使用模型：
+     - `text2vec-base-chinese`  
+     - 或回退到 `paraphrase-multilingual-MiniLM-L12-v2`；
+  5. 构建完成后自动输出检索测试结果；
+- ▶️ 使用方法：
+```bash
+cd backend_core
+python scripts/build_knowledge_db.py
+
 ---
 
 ### 1. 核心功能与技术栈
@@ -230,7 +263,7 @@ Directory structure:
     │   │               ├── c06d5b49495f044e6380e68a60538be17a6bd5d1
     │   │               └── d1514c3162bbe87b343f565fadc62e6c06f04f03
     │   ├── knowledge/
-    │   │   ├── emotion_knowledge.py
+    │   │   ├── emotion_knowledge.py  
     │   │   └── knowledge__init__.py
     │   ├── models/
     │   │   ├── __init__.py
