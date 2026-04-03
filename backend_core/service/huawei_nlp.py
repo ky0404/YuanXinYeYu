@@ -380,3 +380,19 @@ class HuaweiNLPService:
 
 
 huawei_nlp_service = HuaweiNLPService()
+# === 全局实例 ===
+huawei_nlp_service = HuaweiNLPService()
+
+# === 模块级兼容函数 ===
+async def analyze_sentiment(text: str, mode: str = "smart", history=None):
+    """
+    兼容外部模块调用，转发到全局实例的异步方法。
+    示例：from service.huawei_nlp import analyze_sentiment
+    """
+    return await huawei_nlp_service.analyze_sentiment(
+        text=text,
+        mode=mode,
+        history=history,
+    )
+
+__all__ = ["HuaweiNLPService", "huawei_nlp_service", "analyze_sentiment"]
