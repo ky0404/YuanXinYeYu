@@ -1,35 +1,53 @@
+// vite.config.ts
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { VitePWA } from 'vite-plugin-pwa'
 
-// https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: 'autoUpdate',
+      includeAssets: ['favicon.ico', 'apple-touch-icon.png'],
+      manifest: {
+        name:             '暖心树洞 - AI 情绪疏导',
+        short_name:       '暖心树洞',
+        description:      '大学生专属 AI 情绪分析与疏导应用',
+        theme_color:      '#6366f1',
+        background_color: '#f4f6f9',
+        display:          'standalone',
+        start_url:        '/',
+        icons: [
+          { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
+          { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+        ],
+      },
+      workbox: {
+        runtimeCaching: [
+          {
+            urlPattern: /^https?:\/\/.*\/api\/.*/i,
+            handler: 'NetworkOnly', // API 不缓存，始终走网络
+          },
+        ],
+      },
+    }),
+  ],
   server: {
     port: 5173,
     proxy: {
-      // 所有 /api 开头的请求代理到后端 8000 端口
-      '/api': {
-        target: 'http://127.0.0.1:8000',
-        changeOrigin: true,
-        secure: false,
-      },
-      // 兼容旧路径 /emo_analysis
-      '/emo_analysis': {
-        target: 'http://127.0.0.1:8000',
-        changeOrigin: true,
-      },
+      '/api': { target: 'http://127.0.0.1:8000', changeOrigin: true, secure: false },
+      '/emo_analysis': { target: 'http://127.0.0.1:8000', changeOrigin: true },
     },
   },
   build: {
-    // 生产构建优化
     rollupOptions: {
       output: {
-        // 仅仅这里改为了函数形式，解决了 TS2769 报错，其余逻辑完全保留你的原版
         manualChunks(id) {
           if (id.includes('node_modules')) {
-            if (id.includes('react')) return 'vendor';
-            if (id.includes('antd') || id.includes('@ant-design')) return 'antd';
-            if (id.includes('axios')) return 'http';
+            if (id.includes('react')) return 'vendor-react'
+            if (id.includes('antd')) return 'vendor-antd'
+            if (id.includes('axios')) return 'vendor-http'
+            return 'vendor'
           }
         },
       },
