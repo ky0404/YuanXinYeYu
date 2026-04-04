@@ -965,7 +965,9 @@ export default function App() {
 
           {/* ===== 输入区域 ===== */}
           <div className="glass-card input-card">
+        <div className="captcha-safe-wrapper">
             <SlideCaptcha onVerify={handleCaptchaVerify} resetTrigger={resetCap} verified={verified} />
+        </div>
             <div className="sync-hint">
               {verified ? '滑块验证已缓存，本设备 30 分钟内可连续对话' : '完成一次滑块验证后，30 分钟内无需重复验证'}
             </div>
