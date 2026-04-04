@@ -64,6 +64,13 @@ class EmotionAnalyzer:
             mode=mode,
             history=history or []
         )
+        # ── 高危文本纠偏：避免模型把自伤/自杀话题判为“不相关” ──
+        high_risk_kw = ("自伤", "自杀", "轻生", "想死", "不想活", "活不下去", "结束生命", "割腕", "跳楼")
+        if any(k in text for k in high_risk_kw):
+            # 强制负面 + 高强度（仅影响分析卡片字段，不改变 reply 的安全内容）
+            sentiment_result["category"] = 2
+            sentiment_result["label"] = "负面"
+            sentiment_result["score"] = max(float(sentiment_result.get("score", 8.0)), 8.0)
 
         category = sentiment_result["category"]
         score = sentiment_result["score"]
