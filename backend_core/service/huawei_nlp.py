@@ -1,52 +1,71 @@
-"""华为云情感分析服务 v2.1 - RAG 增强 + 人情味 Prompt + 高风险分流
-
-改动说明（相对上一版）：
-1. [P3] Prompt 结构重写：情绪镜像→合理化→1问题→最多2条微建议→陪伴收尾
-2. [P3] 明确禁止"作为AI/根据知识库/根据您的描述"等机器感表达
-3. [P3] BASE_PERSONA 加入角色限制：不用统计数据铺垫、不给人格分析
-4. [P2] 高风险分流：detect_risk_level 识别 urgent/high/medium/low 四级
-         urgent：回复必须优先安全连接，不讨论解决方案
-         high：共情为主，谨慎给建议，结尾给资源
-5. [P0] API Key 日志脱敏：只打前 8 位 + ****
-6. risk_level 从 RAG 命中条目动态取最高值，注入 Prompt（需知识库有该字段）
+"""service/huawei_nlp.py v2.2
+修复：
+  1. 底部 huawei_nlp_service 只实例化一次
+  2. call_post_request：捕获网络/超时异常并回退 requests
+  3. analyze_sentiment：优先走 RagRouter，失败回退旧 rag_service，再失败 rag_context=""
 """
+from __future__ import annotations
+
 import json
 import logging
 import os
 import sys
 from typing import Any, Dict, List, Optional
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(current_dir)
-sys.path.insert(0, project_root)
+# ── 路径保护（兼容直接运行场景）─────────────────────────────────────────
+_current = os.path.dirname(os.path.abspath(__file__))
+_root    = os.path.dirname(_current)
+if _root not in sys.path:
+    sys.path.insert(0, _root)
 
 logger = logging.getLogger(__name__)
 
+from config.settings import settings  # noqa: E402
 
-async def call_post_request(url, headers=None, json_data=None):
-    """统一 POST 调用，优先走项目内 http_client，失败再回退 requests。"""
+
+# ── 统一 POST 调用（修复：捕获网络/超时异常）────────────────────────────
+
+async def call_post_request(
+    url:       str,
+    headers:   Optional[Dict[str, str]] = None,
+    json_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    优先使用 utils.http_client（带重试），任何异常回退到 requests 同步调用。
+    捕获 ImportError 和网络/超时异常，保证不因 http_client 问题导致整体失败。
+    """
+    # 尝试异步 http_client
     try:
-        from utils.request import http_client as original_http_client
+        from utils.request import http_client as _cli  # noqa: PLC0415
 
-        result = await original_http_client.post(url, headers=headers, json_data=json_data)
+        result = await _cli.post(url, headers=headers, json_data=json_data)
         if isinstance(result, dict):
             return result
         if hasattr(result, "json"):
             return result.json()
         return json.loads(result)
+
     except ImportError:
-        import requests
+        logger.debug("[call_post] utils.request 不可用，使用 requests 回退")
+    except Exception as exc:
+        logger.warning("[call_post] http_client 失败 (%s)，回退 requests", exc)
 
-        resp = requests.post(url, headers=headers or {}, json=json_data or {}, timeout=15)
-        return resp.json()
+    # 同步 requests 回退
+    import requests  # noqa: PLC0415
+
+    resp = requests.post(
+        url,
+        headers=headers or {},
+        json=json_data or {},
+        timeout=settings.REQUEST_TIMEOUT,
+    )
+    resp.raise_for_status()
+    return resp.json()
 
 
-from config.settings import settings
-
-
-# ============================================================
+# ═══════════════════════════════════════════════════════════════════════════
 # Prompt 模板
-# ============================================================
+# ═══════════════════════════════════════════════════════════════════════════
 
 BASE_PERSONA = """你叫小暖，是一个拥有专业心理咨询技术（如CBT认知行为疗法）但极具人情味的陪伴者。
 
@@ -57,127 +76,109 @@ BASE_PERSONA = """你叫小暖，是一个拥有专业心理咨询技术（如CB
 4. 不做诊断与人格定性：绝不说"你这是抑郁症"或"你是讨好型人格"。
 
 【回复隐形结构】：
-情绪镜像（看见对方的痛，"我听到了..."） → 正常化（让对方觉得安全，"这种感觉很正常..."） → 一个温和的探索性问题 或 一条极小的建议 → 陪伴式收尾（"我就在这里"）。"""
+情绪镜像（看见对方的痛）→ 正常化（让对方觉得安全）→ 一个温和的探索性问题 或 一条极小的建议 → 陪伴式收尾。"""
 
 MODE_PROMPTS: Dict[str, str] = {
-    "smart": """现在你的侧重点是：智能共情。准确捕捉用户的核心情绪词（如委屈、焦虑、无力）。像镜子一样反射他们的情绪，让他们感到被深深看见，并在结尾温和地问一句当下的具体感受或打算。""",
-    
-    "praise": """现在你的侧重点是：暖心发现。寻找用户话语中哪怕最微小的闪光点（如：愿意倾诉本身就是勇敢、在这么大的压力下依然坚持）。用极其真诚、坚定的语气肯定TA的价值。""",
-    
-    "comfort": """现在你的侧重点是：温柔抱持。降低语速感，使用轻柔的语气词（如：摸摸你、我在呢、慢慢来）。不需要提供任何解决问题的办法，只需要提供安全的倾听空间，让用户觉得“在这里崩溃也没关系”。""",
+    "smart":   "现在你的侧重点是：准确捕捉用户的核心情绪词，像镜子一样反射他们的情绪，让他们感到被深深看见，并在结尾温和地问一句当下的具体感受或打算。",
+    "praise":  "现在你的侧重点是：寻找用户话语中哪怕最微小的闪光点，用极其真诚、坚定的语气肯定TA的价值。",
+    "comfort": "现在你的侧重点是：降低语速感，使用轻柔的语气词，不需要提供任何解决问题的办法，只需要提供安全的倾听空间。",
 }
 
 RISK_PROMPTS: Dict[str, str] = {
-    "low": "", 
-
-    "medium": """【中风险提示】：用户当前情绪比较沉重。请减少分析性语言，多一点温度。不要说"这很正常"（会显得轻飘），改为具体描述你感受到的情绪。""",
-
-    "high": """【高风险提示】：用户可能处在持续低落或强烈痛苦中。请优先共情和陪伴，谨慎给建议（最多1条）。自然地问对方"身边有没有可以说说话的人"。回复结尾轻轻提一下：如果很难受，学校心理中心或者心理援助热线都可以试试。""",
-
-    "urgent": """【极高风险提示 - 触发危机干预】：用户出现了自伤/自杀/活不下去等危险信号。
-你的首要任务不是解决问题，是建立安全连接！
-请：
-1. 承认并接住这种感受，绝对不要否定，不要说"你不应该这样想"。
-2. 温柔但明确地表达担忧："你现在说的让我很担心你，我希望你现在能联系一个信任的人陪着你"。
-3. 必须给出热线：北京 010-82951332 / 全国 400-161-9995。
-【绝对禁止】：给出任何可能涉及伤害细节的内容或深挖原因。""",
+    "low":    "",
+    "medium": "【中风险提示】：用户情绪较沉重，请减少分析性语言，多一点温度，具体描述你感受到的情绪。",
+    "high": (
+        "【高风险提示】：用户可能持续低落或强烈痛苦。优先共情和陪伴，谨慎给建议（最多1条）。"
+        "自然地问对方'身边有没有可以说说话的人'。结尾轻轻提：如果很难受，学校心理中心或心理援助热线都可以试试。"
+    ),
+    "urgent": (
+        "【极高风险 - 触发危机干预】：用户出现自伤/自杀/活不下去等危险信号。"
+        "你的首要任务是建立安全连接！"
+        "请：1. 承认并接住感受，不要否定；"
+        "2. 表达担忧：'你现在说的让我很担心你，我希望你能联系一个信任的人陪着你'；"
+        "3. 必须给出热线：北京 010-82951332 / 全国 400-161-9995。"
+        "【绝对禁止】给出任何涉及伤害细节的内容。"
+    ),
 }
 
-OUTPUT_FORMAT = """请只返回 JSON 格式（必须是合法的 JSON 对象，不要包裹 markdown 代码块）：
-{
-  "sentiment": 情绪类别数字（1=正向 2=负向 3=混合 4=中性 5=无关）,
-  "score": 情绪强度 0-10,
-  "keywords": ["提炼2个核心情绪词"],
-  "reply": "你充满温度的自然回复文本（必须是纯文本，严禁包含任何 JSON 或 Markdown 格式，严禁暴露你是AI）"
-}"""
+OUTPUT_FORMAT = (
+    '请只返回合法的 JSON 对象（不要包裹 markdown 代码块）：\n'
+    '{\n'
+    '  "sentiment": 情绪类别（1=正向 2=负向 3=混合 4=中性 5=无关）,\n'
+    '  "score": 情绪强度 0-10,\n'
+    '  "keywords": ["核心情绪词1","核心情绪词2"],\n'
+    '  "reply": "你的自然回复文本（纯文本，严禁暴露你是AI）"\n'
+    '}'
+)
 
+# ── 风险识别 ──────────────────────────────────────────────────────────────
 
-# ============================================================
-# 风险识别
-# ============================================================
-
-# 紧急词：任一命中 → urgent
-_URGENT_KW = frozenset([
+_URGENT_KW: frozenset = frozenset([
     "自杀", "不想活", "活不下去", "结束生命", "伤害自己",
     "轻生", "想死", "去死", "割腕", "跳楼",
 ])
-# 高危词：命中 2+ → high，命中 1 → medium
-_HIGH_KW = frozenset([
+_HIGH_KW: frozenset = frozenset([
     "绝望", "崩溃", "撑不住", "没意义", "很痛苦",
     "想消失", "活得好累", "熬不住", "没有出路", "死心了",
 ])
-# 中等词：命中 1+ → medium
-_MEDIUM_KW = frozenset([
+_MEDIUM_KW: frozenset = frozenset([
     "很难受", "好难过", "焦虑", "担心", "害怕",
     "睡不着", "压力太大", "快撑不住了", "心好累",
 ])
 
 
 def detect_risk_level(text: str, history: Optional[List[Dict[str, Any]]] = None) -> str:
-    """
-    四级风险识别：urgent / high / medium / low
-    combined = 最近4轮用户消息 + 当前文本
-    """
     history = history or []
     combined = " ".join([
-        *(item.get("content", "") for item in history[-4:] if item.get("role") == "user"),
+        *(h.get("content", "") for h in history[-4:] if h.get("role") == "user"),
         text,
     ])
-
     if any(kw in combined for kw in _URGENT_KW):
         return "urgent"
-
     high_hits = sum(1 for kw in _HIGH_KW if kw in combined)
     if high_hits >= 2:
         return "high"
     if high_hits == 1:
         return "medium"
-
     if any(kw in combined for kw in _MEDIUM_KW):
         return "medium"
-
     return "low"
 
 
 def _max_risk_from_entries(entries: List[Dict[str, Any]]) -> str:
-    """从 RAG 命中条目取最高风险等级，用于提前感知场景。"""
     order = {"urgent": 3, "high": 2, "medium": 1, "low": 0}
-    max_level = "low"
+    level = "low"
     for e in entries:
         lvl = e.get("risk_level", "low")
-        if order.get(lvl, 0) > order.get(max_level, 0):
-            max_level = lvl
-    return max_level
+        if order.get(lvl, 0) > order.get(level, 0):
+            level = lvl
+    return level
 
 
-# ============================================================
-# Prompt 组装
-# ============================================================
 def build_system_prompt(
-    mode: str,
-    rag_context: str = "",
-    risk_level: str = "low",
-    audience: str = "",
-    emotion_type: str = "",
+    mode:         str,
+    rag_context:  str  = "",
+    risk_level:   str  = "low",
+    audience:     str  = "",
+    emotion_type: str  = "",
 ) -> str:
     parts = [BASE_PERSONA]
 
-    # [P1] 增加垂直感：根据目标人群和具体情绪类别动态调整AI语气
     if audience or emotion_type:
-        target_prompt = "【当前用户画像】：\n"
+        seg = "【当前用户画像】：\n"
         if audience:
-            target_prompt += f"- 身份阶段：{audience}。请使用符合该阶段的语言习惯，理解他们的特定压力。\n"
+            seg += f"- 身份阶段：{audience}。请使用符合该阶段的语言习惯。\n"
         if emotion_type:
-            target_prompt += f"- 核心情绪：{emotion_type}。请针对性地给予抱持和共情。\n"
-        parts.append(target_prompt.strip())
+            seg += f"- 核心情绪：{emotion_type}。请针对性给予抱持和共情。\n"
+        parts.append(seg.strip())
 
-    role_prompt = MODE_PROMPTS.get(mode, MODE_PROMPTS["smart"])
-    if role_prompt:
-        parts.append(role_prompt)
+    role = MODE_PROMPTS.get(mode, MODE_PROMPTS["smart"])
+    if role:
+        parts.append(role)
 
-    risk_prompt = RISK_PROMPTS.get(risk_level, "")
-    if risk_prompt:
-        parts.append(risk_prompt)
+    risk = RISK_PROMPTS.get(risk_level, "")
+    if risk:
+        parts.append(risk)
 
     if rag_context:
         parts.append(rag_context)
@@ -186,40 +187,46 @@ def build_system_prompt(
     return "\n\n".join(parts)
 
 
-# ============================================================
+# ═══════════════════════════════════════════════════════════════════════════
 # 主服务类
-# ============================================================
+# ═══════════════════════════════════════════════════════════════════════════
 
 class HuaweiNLPService:
-    """华为云 NLP 服务，带 RAG 检索增强 + 高风险分流。"""
+    """华为云 NLP 服务：三混合 RAG 增强 + 四级风险分流。"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.api_key  = settings.HUAWEI_API_KEY
         self.api_base = settings.HUAWEI_API_BASE
         self.model    = settings.HUAWEI_MODEL
-        self._rag     = None
+
+        # 旧 RAG（sentence_transformers，作为 RagRouter 失败时的回退）
+        self._old_rag = None
 
         if not self.api_key or self.api_key in ("已有", ""):
-            # P0 脱敏：不打完整 key
-            logger.warning("[NLP] 华为云 API Key 未配置。")
+            logger.warning("[NLP] HUAWEI_API_KEY 未配置")
         else:
-            masked = self.api_key[:8] + "****"
-            logger.info("[NLP] API Key 已加载: %s", masked)
+            logger.info("[NLP] API Key 已加载: %s****", self.api_key[:8])
 
-    def _get_rag(self):
-        if self._rag is None:
+    # ── RAG 懒加载 ────────────────────────────────────────────────────────
+
+    def _get_old_rag(self):
+        """懒加载旧 rag_service（sentence_transformers）。"""
+        if self._old_rag is None:
             try:
-                from service.rag_service import rag_service
-                self._rag = rag_service
+                from service.rag_service import rag_service  # noqa: PLC0415
+                self._old_rag = rag_service
+                logger.info("[NLP] 旧 RAG 服务加载成功（回退用）")
             except Exception as exc:
-                logger.warning("[NLP] RAG 服务加载失败，跳过知识库增强: %s", exc)
-                self._rag = False
-        return self._rag if self._rag is not False else None
+                logger.warning("[NLP] 旧 RAG 加载失败: %s", exc)
+                self._old_rag = False
+        return self._old_rag if self._old_rag is not False else None
+
+    # ── 核心分析 ──────────────────────────────────────────────────────────
 
     async def analyze_sentiment(
         self,
-        text: str,
-        mode: str = "smart",
+        text:    str,
+        mode:    str = "smart",
         history: Optional[List[Dict]] = None,
     ) -> Dict[str, Any]:
         if not self.api_key or self.api_key in ("已有", ""):
@@ -229,43 +236,53 @@ class HuaweiNLPService:
 
         history = history or []
 
-        # ── 风险检测（文本+历史） ──────────────────────────────────────────
+        # Step 1: 风险检测
         risk_level = detect_risk_level(text, history)
 
-        # ── RAG 检索 [====== 核心优化 ======] ──────────────────────────────
+        # Step 2: RAG 检索（三路回退）
         rag_context  = ""
-        rag_entries: List[Dict] = []
-        audience = ""
+        old_entries: List[Dict] = []
+        audience     = ""
         emotion_type = ""
-        
-        try:
-            rag = self._get_rag()
-            if rag:
-                rag_entries = rag.retrieve(text, top_k=4, history=history)
-                if rag_entries:
-                    rag_context = rag.format_context(rag_entries, text)
-                    
-                    # 提取人群画像和情绪标签，传递给 Prompt
-                    audience = rag_entries[0].get("audience", "")
-                    emotion_type = rag_entries[0].get("emotion_type", "")
-                    
-                    # 从知识库命中条目取最高风险，与文本检测取较高值
-                    kb_risk = _max_risk_from_entries(rag_entries)
-                    order   = {"urgent": 3, "high": 2, "medium": 1, "low": 0}
-                    if order.get(kb_risk, 0) > order.get(risk_level, 0):
-                        risk_level = kb_risk
-                        
-                    logger.info(
-                        "[NLP] RAG 命中 %d 条 | risk=%s | aud=%s | emo=%s",
-                        len(rag_entries), risk_level, audience, emotion_type
-                    )
-        except Exception as exc:
-            logger.warning("[NLP] RAG 检索失败，跳过: %s", exc)
 
-        # ── 构建 Prompt & 请求 ─────────────────────────────────────────────
-        # 将 audience 和 emotion_type 传入 Prompt 构建器
-        system_prompt = build_system_prompt(mode, rag_context, risk_level, audience, emotion_type)
-        messages      = self._build_messages(system_prompt, text, history)
+        # 2a. 尝试新 RagRouter
+        try:
+            from rag.router import get_rag_router  # noqa: PLC0415
+            router = get_rag_router()
+            rag_context = await router.retrieve(text, history=history, top_k=4)
+            if rag_context:
+                logger.info("[NLP] RagRouter 返回 context_len=%d", len(rag_context))
+        except Exception as exc:
+            logger.warning("[NLP] RagRouter 失败，尝试旧 rag_service: %s", exc)
+
+            # 2b. 回退到旧 rag_service
+            try:
+                old_rag = self._get_old_rag()
+                if old_rag:
+                    old_entries = old_rag.retrieve(text, top_k=4, history=history)
+                    if old_entries:
+                        rag_context  = old_rag.format_context(old_entries, text)
+                        audience     = old_entries[0].get("audience", "")
+                        emotion_type = old_entries[0].get("emotion_type", "")
+
+                        kb_risk = _max_risk_from_entries(old_entries)
+                        order   = {"urgent": 3, "high": 2, "medium": 1, "low": 0}
+                        if order.get(kb_risk, 0) > order.get(risk_level, 0):
+                            risk_level = kb_risk
+
+                        logger.info(
+                            "[NLP] 旧 RAG hits=%d risk=%s aud=%s",
+                            len(old_entries), risk_level, audience,
+                        )
+            except Exception as exc2:
+                logger.warning("[NLP] 旧 RAG 也失败，无 RAG 上下文: %s", exc2)
+                rag_context = ""
+
+        # Step 3: 构建 Prompt
+        system_prompt = build_system_prompt(
+            mode, rag_context, risk_level, audience, emotion_type
+        )
+        messages = self._build_messages(system_prompt, text, history)
 
         url     = f"{self.api_base}/chat/completions"
         headers = {
@@ -275,45 +292,46 @@ class HuaweiNLPService:
         payload = {
             "model":           self.model,
             "messages":        messages,
-            "temperature":     0.65,   # [优化] 再次小幅降低温度，确保其严格遵守不要说"作为AI"的禁令
+            "temperature":     0.65,
             "max_tokens":      560,
             "response_format": {"type": "json_object"},
         }
 
         try:
-            resp = await call_post_request(url, headers=headers, json_data=payload)
+            resp   = await call_post_request(url, headers=headers, json_data=payload)
             result = self._parse(resp, mode)
-            # urgent 场景强制追加热线（防止模型"忘记"）
+
+            # urgent 场景强制追加热线（防模型遗漏）
             if risk_level == "urgent" and "400-161-9995" not in result["reply"]:
                 result["reply"] += (
                     " 如果现在很难受，请拨打心理援助热线 400-161-9995，"
                     "或者让身边的人陪着你。"
                 )
             return result
+
         except Exception as exc:
             logger.error("[NLP] API 调用失败: %s", exc, exc_info=True)
             return self._fallback(self._mode_fallback(mode), str(exc))
 
+    # ── 内部方法 ──────────────────────────────────────────────────────────
+
     def _build_messages(
         self,
         system_prompt: str,
-        current_text: str,
-        history: List[Dict],
+        current_text:  str,
+        history:       List[Dict],
     ) -> List[Dict]:
-        msgs = [{"role": "system", "content": system_prompt}]
+        msgs: List[Dict] = [{"role": "system", "content": system_prompt}]
         if history:
-            history_text = "\n".join(
+            hist_text = "\n".join(
                 f"{'用户' if h['role']=='user' else '小暖'}：{h['content']}"
                 for h in history[-4:]
             )
             msgs.append({
                 "role":    "user",
-                "content": f"下面是最近的对话记录，帮你理解语境，不需要复述：\n{history_text}\n\n请回复这条新消息：",
+                "content": f"以下是最近对话记录（帮你理解语境，不需要复述）：\n{hist_text}\n\n请回复这条新消息：",
             })
-            msgs.append({
-                "role":    "assistant",
-                "content": "好，我会结合上下文自然回应。",
-            })
+            msgs.append({"role": "assistant", "content": "好，我会结合上下文自然回应。"})
         msgs.append({"role": "user", "content": current_text})
         return msgs
 
@@ -324,6 +342,8 @@ class HuaweiNLPService:
                 raise ValueError("响应中没有 choices")
 
             content = choices[0].get("message", {}).get("content", "{}").strip()
+
+            # 清理可能的 markdown 代码块
             if "```" in content:
                 for part in content.split("```"):
                     part = part.strip().removeprefix("json").strip()
@@ -357,6 +377,7 @@ class HuaweiNLPService:
                 "reply":    reply,
                 "keywords": keywords,
             }
+
         except Exception as exc:
             logger.error("[NLP] 解析失败: %s | raw=%s", exc, str(response_dict)[:200])
             return self._fallback(self._mode_fallback(mode), f"PARSE_ERROR: {exc}")
@@ -379,20 +400,17 @@ class HuaweiNLPService:
         }.get(mode, "我在这里，继续说吧。")
 
 
-huawei_nlp_service = HuaweiNLPService()
-# === 全局实例 ===
+# ── 全局单例（只允许一个）───────────────────────────────────────────────
 huawei_nlp_service = HuaweiNLPService()
 
-# === 模块级兼容函数 ===
-async def analyze_sentiment(text: str, mode: str = "smart", history=None):
-    """
-    兼容外部模块调用，转发到全局实例的异步方法。
-    示例：from service.huawei_nlp import analyze_sentiment
-    """
-    return await huawei_nlp_service.analyze_sentiment(
-        text=text,
-        mode=mode,
-        history=history,
-    )
+
+# ── 模块级兼容函数（供其他模块 from service.huawei_nlp import analyze_sentiment）
+async def analyze_sentiment(
+    text:    str,
+    mode:    str = "smart",
+    history: Optional[List[Dict]] = None,
+) -> Dict[str, Any]:
+    return await huawei_nlp_service.analyze_sentiment(text=text, mode=mode, history=history)
+
 
 __all__ = ["HuaweiNLPService", "huawei_nlp_service", "analyze_sentiment"]
