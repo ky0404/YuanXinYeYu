@@ -31,6 +31,7 @@ from core.analysis import emotion_analyzer
 from service.huawei_nlp import analyze_sentiment   # ✅ 华为NLP接口
 from service.cache_service import semantic_cache   # ✅ 语义缓存层
 
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -165,7 +166,7 @@ async def analyze_sentiment(text: str, mode: str = "smart", history=None):
     模块级兼容函数，用于旧代码直接 import。
     内部调用 huawei_nlp_service.analyze_sentiment()
     """
-    return await huawei_nlp_service.analyze_sentiment(
+    return await analyze_sentiment(
         text=text,
         mode=mode,
         history=history,
