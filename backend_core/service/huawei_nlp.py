@@ -1,8 +1,9 @@
-"""service/huawei_nlp.py v2.2
-修复：
-  1. 底部 huawei_nlp_service 只实例化一次
-  2. call_post_request：捕获网络/超时异常并回退 requests
-  3. analyze_sentiment：优先走 RagRouter，失败回退旧 rag_service，再失败 rag_context=""
+"""service/huawei_nlp.py v2.3
+变更说明（相对 v2.2）：
+  1. 新增 _generate_with_context()：将"构建 Prompt + 调用 LLM + 解析"抽取为独立方法，
+     供 LangGraph 节点（agent/graph.py）复用，消除重复实现。
+  2. _generate_with_context() 内注入可选 Langfuse 追踪（LANGFUSE_ENABLED=true 时）。
+  3. 其余逻辑（风险识别、三路 RAG 回退、兜底）与 v2.2 完全一致。
 """
 from __future__ import annotations
 
@@ -12,7 +13,6 @@ import os
 import sys
 from typing import Any, Dict, List, Optional
 
-# ── 路径保护（兼容直接运行场景）─────────────────────────────────────────
 _current = os.path.dirname(os.path.abspath(__file__))
 _root    = os.path.dirname(_current)
 if _root not in sys.path:
@@ -23,36 +23,27 @@ logger = logging.getLogger(__name__)
 from config.settings import settings  # noqa: E402
 
 
-# ── 统一 POST 调用（修复：捕获网络/超时异常）────────────────────────────
+# ── 统一 POST 调用 ────────────────────────────────────────────────────────
 
 async def call_post_request(
     url:       str,
     headers:   Optional[Dict[str, str]] = None,
     json_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """
-    优先使用 utils.http_client（带重试），任何异常回退到 requests 同步调用。
-    捕获 ImportError 和网络/超时异常，保证不因 http_client 问题导致整体失败。
-    """
-    # 尝试异步 http_client
     try:
         from utils.request import http_client as _cli  # noqa: PLC0415
-
         result = await _cli.post(url, headers=headers, json_data=json_data)
         if isinstance(result, dict):
             return result
         if hasattr(result, "json"):
             return result.json()
         return json.loads(result)
-
     except ImportError:
         logger.debug("[call_post] utils.request 不可用，使用 requests 回退")
     except Exception as exc:
         logger.warning("[call_post] http_client 失败 (%s)，回退 requests", exc)
 
-    # 同步 requests 回退
     import requests  # noqa: PLC0415
-
     resp = requests.post(
         url,
         headers=headers or {},
@@ -63,9 +54,9 @@ async def call_post_request(
     return resp.json()
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Prompt 模板
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════
+# Prompt 模板（与 v2.2 完全一致）
+# ══════════════════════════════════════════════════════════════════════════
 
 BASE_PERSONA = """你叫小暖，是一个拥有专业心理咨询技术（如CBT认知行为疗法）但极具人情味的陪伴者。
 
@@ -111,23 +102,27 @@ OUTPUT_FORMAT = (
     '}'
 )
 
-# ── 风险识别 ──────────────────────────────────────────────────────────────
+
+# ── 风险识别（与 v2.2 完全一致）─────────────────────────────────────────
 
 _URGENT_KW: frozenset = frozenset([
-    "自杀", "不想活", "活不下去", "结束生命", "伤害自己",
-    "轻生", "想死", "去死", "割腕", "跳楼",
+    "自杀","不想活","活不下去","结束生命","伤害自己",
+    "轻生","想死","去死","割腕","跳楼",
 ])
 _HIGH_KW: frozenset = frozenset([
-    "绝望", "崩溃", "撑不住", "没意义", "很痛苦",
-    "想消失", "活得好累", "熬不住", "没有出路", "死心了",
+    "绝望","崩溃","撑不住","没意义","很痛苦",
+    "想消失","活得好累","熬不住","没有出路","死心了",
 ])
 _MEDIUM_KW: frozenset = frozenset([
-    "很难受", "好难过", "焦虑", "担心", "害怕",
-    "睡不着", "压力太大", "快撑不住了", "心好累",
+    "很难受","好难过","焦虑","担心","害怕",
+    "睡不着","压力太大","快撑不住了","心好累",
 ])
 
 
-def detect_risk_level(text: str, history: Optional[List[Dict[str, Any]]] = None) -> str:
+def detect_risk_level(
+    text:    str,
+    history: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     history = history or []
     combined = " ".join([
         *(h.get("content", "") for h in history[-4:] if h.get("role") == "user"),
@@ -157,13 +152,12 @@ def _max_risk_from_entries(entries: List[Dict[str, Any]]) -> str:
 
 def build_system_prompt(
     mode:         str,
-    rag_context:  str  = "",
-    risk_level:   str  = "low",
-    audience:     str  = "",
-    emotion_type: str  = "",
+    rag_context:  str = "",
+    risk_level:   str = "low",
+    audience:     str = "",
+    emotion_type: str = "",
 ) -> str:
     parts = [BASE_PERSONA]
-
     if audience or emotion_type:
         seg = "【当前用户画像】：\n"
         if audience:
@@ -171,35 +165,29 @@ def build_system_prompt(
         if emotion_type:
             seg += f"- 核心情绪：{emotion_type}。请针对性给予抱持和共情。\n"
         parts.append(seg.strip())
-
     role = MODE_PROMPTS.get(mode, MODE_PROMPTS["smart"])
     if role:
         parts.append(role)
-
     risk = RISK_PROMPTS.get(risk_level, "")
     if risk:
         parts.append(risk)
-
     if rag_context:
         parts.append(rag_context)
-
     parts.append(OUTPUT_FORMAT)
     return "\n\n".join(parts)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════
 # 主服务类
-# ═══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════
 
 class HuaweiNLPService:
-    """华为云 NLP 服务：三混合 RAG 增强 + 四级风险分流。"""
+    """华为云 NLP 服务：三混合 RAG 增强 + 四级风险分流 + 可选 Langfuse 追踪。"""
 
     def __init__(self) -> None:
         self.api_key  = settings.HUAWEI_API_KEY
         self.api_base = settings.HUAWEI_API_BASE
         self.model    = settings.HUAWEI_MODEL
-
-        # 旧 RAG（sentence_transformers，作为 RagRouter 失败时的回退）
         self._old_rag = None
 
         if not self.api_key or self.api_key in ("已有", ""):
@@ -207,10 +195,9 @@ class HuaweiNLPService:
         else:
             logger.info("[NLP] API Key 已加载: %s****", self.api_key[:8])
 
-    # ── RAG 懒加载 ────────────────────────────────────────────────────────
+    # ── 旧 RAG 懒加载 ─────────────────────────────────────────────────────
 
     def _get_old_rag(self):
-        """懒加载旧 rag_service（sentence_transformers）。"""
         if self._old_rag is None:
             try:
                 from service.rag_service import rag_service  # noqa: PLC0415
@@ -221,7 +208,7 @@ class HuaweiNLPService:
                 self._old_rag = False
         return self._old_rag if self._old_rag is not False else None
 
-    # ── 核心分析 ──────────────────────────────────────────────────────────
+    # ── 核心公共方法（供 core/analysis.py 调用）──────────────────────────
 
     async def analyze_sentiment(
         self,
@@ -229,6 +216,11 @@ class HuaweiNLPService:
         mode:    str = "smart",
         history: Optional[List[Dict]] = None,
     ) -> Dict[str, Any]:
+        """
+        完整分析流程：风险识别 → 三路 RAG 回退 → LLM 生成 → 安全后处理。
+        此方法在旧链路（USE_LANGGRAPH=false）下被直接调用；
+        LangGraph 链路下通过 _generate_with_context() 绕过 RAG（已由图节点检索）。
+        """
         if not self.api_key or self.api_key in ("已有", ""):
             return self._fallback("暂时还没有连上分析服务，但我会继续陪着你。", "API_KEY_MISSING")
         if not text or not text.strip():
@@ -245,17 +237,14 @@ class HuaweiNLPService:
         audience     = ""
         emotion_type = ""
 
-        # 2a. 尝试新 RagRouter
         try:
             from rag.router import get_rag_router  # noqa: PLC0415
-            router = get_rag_router()
+            router      = get_rag_router()
             rag_context = await router.retrieve(text, history=history, top_k=4)
             if rag_context:
                 logger.info("[NLP] RagRouter 返回 context_len=%d", len(rag_context))
         except Exception as exc:
             logger.warning("[NLP] RagRouter 失败，尝试旧 rag_service: %s", exc)
-
-            # 2b. 回退到旧 rag_service
             try:
                 old_rag = self._get_old_rag()
                 if old_rag:
@@ -264,23 +253,61 @@ class HuaweiNLPService:
                         rag_context  = old_rag.format_context(old_entries, text)
                         audience     = old_entries[0].get("audience", "")
                         emotion_type = old_entries[0].get("emotion_type", "")
-
-                        kb_risk = _max_risk_from_entries(old_entries)
-                        order   = {"urgent": 3, "high": 2, "medium": 1, "low": 0}
+                        kb_risk      = _max_risk_from_entries(old_entries)
+                        order        = {"urgent": 3, "high": 2, "medium": 1, "low": 0}
                         if order.get(kb_risk, 0) > order.get(risk_level, 0):
                             risk_level = kb_risk
-
-                        logger.info(
-                            "[NLP] 旧 RAG hits=%d risk=%s aud=%s",
-                            len(old_entries), risk_level, audience,
-                        )
+                        logger.info("[NLP] 旧 RAG hits=%d risk=%s", len(old_entries), risk_level)
             except Exception as exc2:
                 logger.warning("[NLP] 旧 RAG 也失败，无 RAG 上下文: %s", exc2)
                 rag_context = ""
 
-        # Step 3: 构建 Prompt
+        # Step 3: LLM 生成（含可选 Langfuse 追踪）
+        result = await self._generate_with_context(
+            text=text,
+            mode=mode,
+            history=history,
+            rag_context=rag_context,
+            risk_level=risk_level,
+            audience=audience,
+            emotion_type=emotion_type,
+        )
+
+        # Step 4: urgent 热线保底
+        if risk_level == "urgent" and "400-161-9995" not in result.get("reply", ""):
+            result["reply"] = (
+                result.get("reply", "")
+                + " 如果现在很难受，请拨打心理援助热线 400-161-9995，"
+                  "或者让身边的人陪着你。"
+            )
+
+        return result
+
+    # ── 核心内部方法：构建 Prompt + 调用 LLM + 解析 ──────────────────────
+    # 此方法被两个路径复用：
+    #   旧链路：analyze_sentiment() → _generate_with_context()
+    #   新链路：agent/graph.py node_llm_generate → _generate_with_context()
+
+    async def _generate_with_context(
+        self,
+        text:         str,
+        mode:         str,
+        history:      List[Dict],
+        rag_context:  str = "",
+        risk_level:   str = "low",
+        audience:     str = "",
+        emotion_type: str = "",
+    ) -> Dict[str, Any]:
+        """
+        纯 LLM 生成方法（RAG 上下文已在外部准备好）。
+        含可选 Langfuse 追踪，任何异常回退 fallback。
+        """
         system_prompt = build_system_prompt(
-            mode, rag_context, risk_level, audience, emotion_type
+            mode=mode,
+            rag_context=rag_context,
+            risk_level=risk_level,
+            audience=audience,
+            emotion_type=emotion_type,
         )
         messages = self._build_messages(system_prompt, text, history)
 
@@ -297,23 +324,43 @@ class HuaweiNLPService:
             "response_format": {"type": "json_object"},
         }
 
-        try:
-            resp   = await call_post_request(url, headers=headers, json_data=payload)
-            result = self._parse(resp, mode)
+        # ── 可选 Langfuse 追踪 ────────────────────────────────────────────
+        if settings.LANGFUSE_ENABLED:
+            from agent.langfuse_client import LangfuseTrace  # noqa: PLC0415
+            trace_ctx = LangfuseTrace(
+                name="nlp_generate",
+                input_kv={
+                    "text":  text[:200],
+                    "mode":  mode,
+                    "risk":  risk_level,
+                    "has_rag": bool(rag_context),
+                },
+                metadata={"route": "direct" if not settings.USE_LANGGRAPH else "langgraph"},
+            )
+        else:
+            trace_ctx = _NullContext()
 
-            # urgent 场景强制追加热线（防模型遗漏）
-            if risk_level == "urgent" and "400-161-9995" not in result["reply"]:
-                result["reply"] += (
-                    " 如果现在很难受，请拨打心理援助热线 400-161-9995，"
-                    "或者让身边的人陪着你。"
-                )
+        try:
+            with trace_ctx as trace:
+                trace.start_llm(model=self.model, prompt=system_prompt, mode=mode)
+                resp   = await call_post_request(url, headers=headers, json_data=payload)
+                result = self._parse(resp, mode)
+                trace.end_llm(output=result)
+                # set_output 在未启用 Langfuse 或不同版本下可能不存在/签名不同，必须安全调用
+            if trace is not None and hasattr(trace, "set_output"):
+                try:
+                    trace.set_output({"category": result.get("category"), "score": result.get("score")})
+                except TypeError:
+                    pass
+                except Exception:
+                    pass
             return result
 
         except Exception as exc:
-            logger.error("[NLP] API 调用失败: %s", exc, exc_info=True)
+            logger.error("[NLP] _generate_with_context 失败: %s", exc, exc_info=True)
             return self._fallback(self._mode_fallback(mode), str(exc))
 
-    # ── 内部方法 ──────────────────────────────────────────────────────────
+    # ── 内部辅助方法 ──────────────────────────────────────────────────────
 
     def _build_messages(
         self,
@@ -342,8 +389,6 @@ class HuaweiNLPService:
                 raise ValueError("响应中没有 choices")
 
             content = choices[0].get("message", {}).get("content", "{}").strip()
-
-            # 清理可能的 markdown 代码块
             if "```" in content:
                 for part in content.split("```"):
                     part = part.strip().removeprefix("json").strip()
@@ -400,17 +445,36 @@ class HuaweiNLPService:
         }.get(mode, "我在这里，继续说吧。")
 
 
-# ── 全局单例（只允许一个）───────────────────────────────────────────────
+# ── 空上下文管理器（Langfuse 关闭时使用）────────────────────────────────
+
+class _NullContext:
+    def __enter__(self): return self
+    def __exit__(self, *_): return False
+    def start_llm(self, **_): pass
+    def end_llm(self, **_):   pass
+    def set_output(self, **_): pass
+
+
+# ── 全局单例（唯一实例）─────────────────────────────────────────────────
 huawei_nlp_service = HuaweiNLPService()
 
 
-# ── 模块级兼容函数（供其他模块 from service.huawei_nlp import analyze_sentiment）
+# ── 模块级兼容函数 ────────────────────────────────────────────────────────
 async def analyze_sentiment(
     text:    str,
     mode:    str = "smart",
     history: Optional[List[Dict]] = None,
 ) -> Dict[str, Any]:
-    return await huawei_nlp_service.analyze_sentiment(text=text, mode=mode, history=history)
+    return await analyze_sentiment(
+        text=text, mode=mode, history=history
+    )
 
 
-__all__ = ["HuaweiNLPService", "huawei_nlp_service", "analyze_sentiment"]
+__all__ = [
+    "HuaweiNLPService",
+    "huawei_nlp_service",
+    "analyze_sentiment",
+    "detect_risk_level",
+    "build_system_prompt",
+    "call_post_request",
+]
