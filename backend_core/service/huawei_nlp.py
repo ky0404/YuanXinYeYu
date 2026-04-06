@@ -79,9 +79,12 @@ RISK_PROMPTS: Dict[str, str] = {
     "low":    "",
     "medium": "【中风险提示】：用户情绪较沉重，请减少分析性语言，多一点温度，具体描述你感受到的情绪。",
     "high": (
-        "【高风险提示】：用户可能持续低落或强烈痛苦。优先共情和陪伴，谨慎给建议（最多1条）。"
-        "自然地问对方'身边有没有可以说说话的人'。结尾轻轻提：如果很难受，学校心理中心或心理援助热线都可以试试。"
+    "【高风险提示】：用户可能持续低落或强烈痛苦。优先共情和陪伴，谨慎给建议（最多1条）。"
+    "自然地问对方'身边有没有可以说说话的人'。"
+    "结尾请稳定地加入一句【软提示】（不必强贴号码）："
+    "“如果你现在真的很难受，也可以考虑联系学校心理中心或心理援助热线。”"
     ),
+
     "urgent": (
         "【极高风险 - 触发危机干预】：用户出现自伤/自杀/活不下去等危险信号。"
         "你的首要任务是建立安全连接！"
@@ -102,42 +105,102 @@ OUTPUT_FORMAT = (
     '}'
 )
 
+# ── 风险识别（v2.3.3：带 reason 日志 + 兼顾 urgent 召回）───────────────
+import re  # noqa: E402
 
-# ── 风险识别（与 v2.2 完全一致）─────────────────────────────────────────
+_RE_NEGATION = re.compile(r"(不想|不会|没想|不是|并不|从没|没有|别担心|开玩笑|吓你|只是说说|不是真的|我不会这么做)")
+_RE_FAREWELL = re.compile(r"(告别了|再见了|永别|不说了|谢谢你陪我|谢谢你听我说|就到这吧|我走了|最后一次|最后跟你说)")
+_RE_IMMINENT = re.compile(r"(现在就|马上|今晚|今天就|待会就|已经准备|已经买了|已经写好|已经选好|已经决定|就在今天)")
+_RE_METHOD   = re.compile(r"(割腕|跳楼|上吊|吞药|吃药|喝药|撞墙|刀|绳子|窗台|煤气|农药|安眠药|遗书)")
 
-_URGENT_KW: frozenset = frozenset([
-    "自杀","不想活","活不下去","结束生命","伤害自己",
-    "轻生","想死","去死","割腕","跳楼",
-])
-_HIGH_KW: frozenset = frozenset([
-    "绝望","崩溃","撑不住","没意义","很痛苦",
-    "想消失","活得好累","熬不住","没有出路","死心了",
-])
-_MEDIUM_KW: frozenset = frozenset([
-    "很难受","好难过","焦虑","担心","害怕",
-    "睡不着","压力太大","快撑不住了","心好累",
-])
+_RE_SUICIDE_INTENT = re.compile(r"(自杀|轻生|想死|不想活|结束生命|活不下去|去死|死了算了)")
+_RE_SELF_HARM      = re.compile(r"(自伤|自残|划伤|割自己|伤害自己|割腕|想割|想划|想弄伤自己)")
+
+# “被动意念/生命厌倦/强绝望”——很多数据集会标 urgent（你现在漏掉的主要在这）
+_RE_PASSIVE_IDEATION = re.compile(r"(不想醒来|希望消失|想消失|不如消失|不想存在|活着没意思|活着没意义|我累了|不想再撑了|不想继续了|放弃了|一了百了|解脱)")
+_RE_HOPELESS = re.compile(r"(绝望|崩溃|撑不住|没意义|活得好累|熬不住|没有出路|死心了|我完了|没救了|一无是处|我不配|我很废)")
+
+_RE_MEDIUM = re.compile(r"(焦虑|压力|担心|害怕|难受|难过|睡不着|失眠|心慌|喘不过气|纠结|很累|烦|崩了)")
 
 
-def detect_risk_level(
-    text:    str,
+def _has_negation_near(text: str, start: int, end: int, window: int = 8) -> bool:
+    seg = text[max(0, start - window): min(len(text), end + window)]
+    return bool(_RE_NEGATION.search(seg))
+
+
+def detect_risk_level_with_reason(
+    text: str,
     history: Optional[List[Dict[str, Any]]] = None,
-) -> str:
+) -> tuple[str, str]:
     history = history or []
     combined = " ".join([
         *(h.get("content", "") for h in history[-4:] if h.get("role") == "user"),
-        text,
-    ])
-    if any(kw in combined for kw in _URGENT_KW):
-        return "urgent"
-    high_hits = sum(1 for kw in _HIGH_KW if kw in combined)
-    if high_hits >= 2:
-        return "high"
-    if high_hits == 1:
-        return "medium"
-    if any(kw in combined for kw in _MEDIUM_KW):
-        return "medium"
-    return "low"
+        text or "",
+    ]).strip()
+
+    if not combined:
+        return "low", "empty"
+
+    # 1) urgent：临别告别（ur_017）
+    if _RE_FAREWELL.search(combined):
+        return "urgent", "farewell"
+
+    # 2) urgent：明确计划/方法/迫近信号（最可靠）
+    if _RE_IMMINENT.search(combined) and (_RE_SUICIDE_INTENT.search(combined) or _RE_SELF_HARM.search(combined)):
+        return "urgent", "imminent+intent"
+    if _RE_METHOD.search(combined) and (_RE_SUICIDE_INTENT.search(combined) or _RE_SELF_HARM.search(combined)):
+        return "urgent", "method+intent"
+
+    # 3) 自杀意图（排除否定）：无迫近/方法时按 high
+    for m in _RE_SUICIDE_INTENT.finditer(combined):
+        if _has_negation_near(combined, m.start(), m.end()):
+            continue
+        # 如果同句还带强绝望/被动意念，也提升到 urgent（对齐很多数据集口径）
+        if _RE_PASSIVE_IDEATION.search(combined) or _RE_HOPELESS.search(combined):
+            return "urgent", "suicide_intent+hopeless"
+        return "high", "suicide_intent"
+
+    # 4) 自伤（排除否定较难，这里以强词为准）：无迫近/方法时 high
+    if _RE_SELF_HARM.search(combined):
+        if _RE_IMMINENT.search(combined):
+            return "urgent", "self_harm+imminent"
+        if _RE_METHOD.search(combined):
+            return "urgent", "self_harm+method"
+        # 自伤+绝望/被动意念 => urgent（提高召回）
+        if _RE_PASSIVE_IDEATION.search(combined) or _RE_HOPELESS.search(combined):
+            return "urgent", "self_harm+hopeless"
+        return "high", "self_harm"
+
+    # 5) 被动意念（很多用例会标 urgent）：无否定时提升
+    m = _RE_PASSIVE_IDEATION.search(combined)
+    if m and not _has_negation_near(combined, m.start(), m.end()):
+        # 若同时出现强绝望词，更倾向 urgent
+        if _RE_HOPELESS.search(combined):
+            return "urgent", "passive_ideation+hopeless"
+        return "high", "passive_ideation"
+
+    # 6) high：强绝望（无意图/方法）
+    if _RE_HOPELESS.search(combined):
+        return "high", "hopelessness"
+
+    # 7) medium：常见压力/焦虑/失眠/人际
+    if _RE_MEDIUM.search(combined):
+        return "medium", "common_stress"
+
+    return "low", "default"
+
+
+def detect_risk_level(
+    text: str,
+    history: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    level, reason = detect_risk_level_with_reason(text, history)
+    try:
+        preview = (text or "").strip().replace("\n", " ")[:30]
+        logger.info("[risk] level=%s reason=%s text=%r", level, reason, preview)
+    except Exception:
+        pass
+    return level
 
 
 def _max_risk_from_entries(entries: List[Dict[str, Any]]) -> str:
