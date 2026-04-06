@@ -2,9 +2,10 @@
 情绪分析核心逻辑。
 
 v2.3 变更：
-  - 在 analyze() 方法开头新增 LangGraph 可选路径（USE_LANGGRAPH=true 时启用）
-  - LangGraph 任何异常 → 立即 fallback 到原有链路，行为不变
-  - 高危纠偏逻辑、guide 生成、模板兜底等全部保留不变
+  - analyze() 方法新增 LangGraph 可选路径（USE_LANGGRAPH=true 时启用）
+  - LangGraph 任何异常 → fallback 到旧链路，行为不变
+  - 高危纠偏逻辑、guide 生成、模板兜底等全部保留
+  - ✅透传 RAG refs：当 sentiment_result 含 "_refs" 时，最终 result 也附带 "_refs"
 """
 from __future__ import annotations
 
@@ -53,8 +54,8 @@ class EmotionAnalyzer:
 
     async def analyze(
         self,
-        text:    str,
-        mode:    str = "smart",
+        text: str,
+        mode: str = "smart",
         history: Optional[List[Dict]] = None,
     ) -> Dict[str, Any]:
         if not text or not text.strip():
@@ -62,31 +63,21 @@ class EmotionAnalyzer:
 
         history = history or []
 
-        # ════════════════════════════════════════════════════════════════
-        # 可选路径：LangGraph 有状态工作流
-        # 默认 USE_LANGGRAPH=false，完全不影响现有链路。
-        # 开启后：任何异常立即 fallback 到下方旧链路，行为对外不变。
-        # ════════════════════════════════════════════════════════════════
-        from config.settings import settings  # noqa: PLC0415（避免循环导入）
+        from config.settings import settings  # noqa: PLC0415
 
         if settings.USE_LANGGRAPH:
             try:
                 from agent.graph import run_agent  # noqa: PLC0415
                 sentiment_result = await run_agent(text, mode, history)
                 logger.info("[Analysis] LangGraph 链路成功 | mode=%s", mode)
-                # 复用下方的后处理逻辑（高危纠偏 + guide 生成）
                 return self._post_process(text, mode, sentiment_result)
             except Exception as exc:
                 logger.warning(
                     "[Analysis] LangGraph 失败，回退旧链路: %s",
                     exc,
-                    exc_info=False,   # 不打完整 traceback，避免日志洪水
+                    exc_info=False,
                 )
-                # ↓ 继续执行旧链路（fall through）
 
-        # ════════════════════════════════════════════════════════════════
-        # 旧链路（原有逻辑，完全不变）
-        # ════════════════════════════════════════════════════════════════
         sentiment_result = await huawei_nlp_service.analyze_sentiment(
             text=text, mode=mode, history=history
         )
@@ -94,47 +85,42 @@ class EmotionAnalyzer:
 
     def _post_process(
         self,
-        text:             str,
-        mode:             str,
+        text: str,
+        mode: str,
         sentiment_result: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """
-        通用后处理（两条链路共用）：
-          1. 高危文本纠偏（强制负面 + 高强度）
-          2. guide 生成
-          3. 组装最终结果字典
-        """
-        # ── 高危文本纠偏：避免模型把自伤话题判为"不相关" ───────────────
         _high_risk_kw = (
             "自伤","自杀","轻生","想死","不想活",
             "活不下去","结束生命","割腕","跳楼",
         )
         if any(k in text for k in _high_risk_kw):
             sentiment_result["category"] = 2
-            sentiment_result["label"]    = "负面"
-            sentiment_result["score"]    = max(
-                float(sentiment_result.get("score", 8.0)), 8.0
-            )
+            sentiment_result["label"] = "负面"
+            sentiment_result["score"] = max(float(sentiment_result.get("score", 8.0)), 8.0)
 
         category = sentiment_result["category"]
-        score    = sentiment_result["score"]
+        score = sentiment_result["score"]
 
         ai_reply = sentiment_result.get("reply", "")
         if not ai_reply:
             ai_reply = self._mode_fallback_reply(mode, category)
 
-        keywords   = sentiment_result.get("keywords", [])
+        keywords = sentiment_result.get("keywords", [])
         guide_text = self._generate_guide(category=category, score=score)
 
-        result = {
+        result: Dict[str, Any] = {
             "sentiment_category": category,
-            "sentiment_score":    score,
-            "sentiment_label":    sentiment_result.get("label", "中性"),
-            "reply":              ai_reply,
-            "guide":              guide_text,
-            "keywords":           keywords,
-            "mode":               mode,
+            "sentiment_score": score,
+            "sentiment_label": sentiment_result.get("label", "中性"),
+            "reply": ai_reply,
+            "guide": guide_text,
+            "keywords": keywords,
+            "mode": mode,
         }
+
+        # ✅透传 refs（以及未来扩展字段）
+        if "_refs" in sentiment_result:
+            result["_refs"] = sentiment_result["_refs"]
 
         logger.info(
             "分析完成 | label=%s score=%.1f keywords=%s mode=%s",
@@ -174,5 +160,4 @@ class EmotionAnalyzer:
         return mode_fallback.get(category, mode_fallback.get(4, "我在这里听你说～"))
 
 
-# 全局分析器实例
 emotion_analyzer = EmotionAnalyzer()
