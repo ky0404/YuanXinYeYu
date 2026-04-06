@@ -1,3 +1,10 @@
+我来给你准备三份完整内容！
+
+---
+
+# 一、新版 README.md
+
+```markdown
 # 🌸 媛心烨语 · AI 情绪陪伴与心理疏导系统
 
 > 温婉如媛，明亮如烨 —— 一个懂你情绪、会安慰人的心灵 AI 伴侣。
@@ -78,17 +85,20 @@
 ### 1. LangGraph 状态机编排（`agent/graph.py`）
 
 系统将核心业务流程重构为**4节点线性状态机**，实现清晰的业务流转与优雅的故障降级：
+
+```
 用户输入
-↓
+  ↓
 [risk_detect]   ← 关键词 + LLM 四级风险识别
-↓
+  ↓
 [rag_retrieve]  ← 三混合 RAG 检索（VectorRAG + GraphRAG + BM25 + RRF 融合）
-↓
+  ↓
 [llm_generate]  ← 华为云 DeepSeek v3.2 生成回复 + Langfuse 追踪
-↓
+  ↓
 [safety_check]  ← urgent 级别强制追加心理援助热线
-↓
+  ↓
 SSE 流式推送给前端（token 逐字输出）
+```
 
 **设计亮点**：
 - 懒加载单例编译（`_compiled_graph`），节省内存约 20MB
@@ -97,6 +107,7 @@ SSE 流式推送给前端（token 逐字输出）
 - 全局 `AgentState` TypedDict，节点间无副作用传递
 
 **运行日志示例**：
+```
 [LG] Graph 编译完成 | nodes=4 (risk→rag→llm→safety)
 [LG] run_agent START | mode=smart text_len=15 history=6
 [LG] risk_detect | risk=low text_len=15
@@ -104,6 +115,7 @@ SSE 流式推送给前端（token 逐字输出）
 [LG] llm_generate | category=2 score=8.0 reply_len=202
 [LG] safety_check | 无需追加热线
 [LG] run_agent END | category=2 score=8.0
+```
 
 ---
 
@@ -126,17 +138,22 @@ SSE 流式推送给前端（token 逐字输出）
 ---
 
 ### 3. 四级危机干预 SOP（`core/risk_detection.py`）
+
+```
 level=low    → 正常情绪分析回复
 level=medium → 增加关怀引导，软提示专业资源
 level=high   → GraphRAG 强制检索危机资源，追加建议
 level=urgent → 隐藏原始回复，强制显示心理援助热线
-热线：400-161-9995（全国心理援助）
+               热线：400-161-9995（全国心理援助）
+```
 
 **可解释日志**（生产实测）：
+```
 [risk] level=urgent reason=method_only      text='我买了很多安眠药...'
 [risk] level=urgent reason=method+intent    text='我割腕了...'
 [risk] level=urgent reason=farewell         text='告别了，谢谢你陪我...'
 [risk] level=low    reason=no_keywords      text='最近工作压力有点大'
+```
 
 ---
 
@@ -207,6 +224,8 @@ cat eval/output/report_*.md     # 查看评测报告
 ---
 
 ## 📁 项目结构
+
+```
 ky0404-yuanxinyeyu/
 ├── backend_core/
 │   ├── main.py                    # 服务启动入口
@@ -256,11 +275,12 @@ ky0404-yuanxinyeyu/
 │       ├── response.py            # 统一响应格式
 │       └── request.py             # HTTP 请求工具
 └── frontend_core/
-├── index.html
-├── vite.config.ts
-└── src/
-├── App.tsx                # 主应用组件
-└── main.tsx               # React 入口
+    ├── index.html
+    ├── vite.config.ts
+    └── src/
+        ├── App.tsx                # 主应用组件
+        └── main.tsx               # React 入口
+```
 
 ---
 
@@ -299,3 +319,4 @@ location /api/emo_analysis_stream {
 ## 📜 开源协议
 
 MIT License © 2026 ky0404
+```
