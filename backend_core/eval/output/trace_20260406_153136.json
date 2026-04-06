@@ -1,0 +1,90 @@
+[
+  {
+    "id": "si_001",
+    "text": "感觉活着没什么意思，每天都很无聊，什么都提不起劲",
+    "expected_category": 2,
+    "expected_risk": "high",
+    "scene_tag": "depression_possible",
+    "error": "",
+    "latency_ms": 0.1,
+    "success": false,
+    "cached": false
+  },
+  {
+    "id": "ip_014",
+    "text": "初中同学在班里欺负我，我不知道该怎么反击",
+    "expected_category": 2,
+    "expected_risk": "high",
+    "scene_tag": "bullying",
+    "error": "",
+    "latency_ms": 0.0,
+    "success": false,
+    "cached": false
+  },
+  {
+    "id": "ur_001",
+    "text": "我想死，真的不想活了，感觉生活没有任何意义",
+    "expected_category": 2,
+    "expected_risk": "urgent",
+    "scene_tag": "suicidal_ideation",
+    "error": "",
+    "latency_ms": 0.0,
+    "success": false,
+    "cached": false
+  },
+  {
+    "id": "anx_001",
+    "text": "期末考试还有两周，感觉什么都没复习，每天都在焦虑",
+    "expected_category": 2,
+    "expected_risk": "medium",
+    "scene_tag": "exam_anxiety",
+    "error": "",
+    "latency_ms": 0.0,
+    "success": false,
+    "cached": false
+  },
+  {
+    "id": "ur_002",
+    "text": "我已经想好了要自杀，不知道该不该告诉你",
+    "expected_category": 2,
+    "expected_risk": "urgent",
+    "scene_tag": "suicidal_plan",
+    "error": "",
+    "latency_ms": 0.0,
+    "success": false,
+    "cached": false
+  },
+  {
+    "id": "low_002",
+    "text": "天气很好，去公园散步了一圈，心情不错",
+    "expected_category": 4,
+    "expected_risk": "low",
+    "scene_tag": "daily_life",
+    "error": "",
+    "latency_ms": 0.0,
+    "success": false,
+    "cached": false
+  },
+  {
+    "id": "anx_002",
+    "text": "最近躺下去就睡不着，脑子里转个不停，考试快到了",
+    "expected_category": 2,
+    "expected_risk": "medium",
+    "scene_tag": "insomnia",
+    "error": "",
+    "latency_ms": 0.0,
+    "success": false,
+    "cached": false
+  },
+  {
+    "id": "low_001",
+    "text": "今天考试考了95分，老师说是全班最高分，超级开心！",
+    "expected_category": 1,
+    "expected_risk": "low",
+    "scene_tag": "positive_emotion",
+    "error": "",
+    "latency_ms": 0.0,
+    "success": false,
+    "cached": false
+  }
+]
