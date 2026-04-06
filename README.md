@@ -315,4 +315,3 @@ location /api/emo_analysis_stream {
 ## 📜 开源协议
 
 MIT License © 2026 ky0404
-```
