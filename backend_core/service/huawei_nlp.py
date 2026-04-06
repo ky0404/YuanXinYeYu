@@ -465,7 +465,7 @@ async def analyze_sentiment(
     mode:    str = "smart",
     history: Optional[List[Dict]] = None,
 ) -> Dict[str, Any]:
-    return await analyze_sentiment(
+    return await huawei_nlp_service.analyze_sentiment(
         text=text, mode=mode, history=history
     )
 
