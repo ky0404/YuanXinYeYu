@@ -111,9 +111,9 @@ import re  # noqa: E402
 _RE_NEGATION = re.compile(r"(不想|不会|没想|不是|并不|从没|没有|别担心|开玩笑|吓你|只是说说|不是真的|我不会这么做)")
 _RE_FAREWELL = re.compile(r"(告别了|再见了|永别|不说了|谢谢你陪我|谢谢你听我说|就到这吧|我走了|最后一次|最后跟你说)")
 _RE_IMMINENT = re.compile(r"(现在就|马上|今晚|今天就|待会就|已经准备|已经买了|已经写好|已经选好|已经决定|就在今天)")
-_RE_METHOD   = re.compile(r"(割腕|跳楼|上吊|吞药|吃药|喝药|撞墙|刀|绳子|窗台|煤气|农药|安眠药|遗书)")
+_RE_METHOD = re.compile(r"(割腕|跳楼|上吊|吞药|吃药|喝药|撞墙|刀|绳子|窗台|楼顶|煤气|农药|安眠药|药|全部吃完|一次吃完|流了很多血|流血|遗书)")
 
-_RE_SUICIDE_INTENT = re.compile(r"(自杀|轻生|想死|不想活|结束生命|活不下去|去死|死了算了)")
+_RE_SUICIDE_INTENT = re.compile(r"(自杀|轻生|想死|不想活|结束生命|活不下去|去死|死了算了|做傻事|不想再活了|想结束一切)")
 _RE_SELF_HARM      = re.compile(r"(自伤|自残|划伤|割自己|伤害自己|割腕|想割|想划|想弄伤自己)")
 
 # “被动意念/生命厌倦/强绝望”——很多数据集会标 urgent（你现在漏掉的主要在这）
@@ -141,15 +141,18 @@ def detect_risk_level_with_reason(
     if not combined:
         return "low", "empty"
 
-    # 1) urgent：临别告别（ur_017）
-    if _RE_FAREWELL.search(combined):
-        return "urgent", "farewell"
+    # 2) urgent：方法/迫近信号（只要出现“方法/血/楼顶/安眠药/全部吃完”等，就非常危险）
+    # - 若同时出现“意图/自伤” => urgent
+    # - 或者出现“流血/楼顶/全部吃完/遗书”等强信号，也直接 urgent
+    if _RE_METHOD.search(combined):
+        if _RE_SUICIDE_INTENT.search(combined) or _RE_SELF_HARM.search(combined):
+            return "urgent", "method+intent"
+        # 强方法信号（即使没说“想死”，也要按 urgent 处理）
+        return "urgent", "method_only"
 
-    # 2) urgent：明确计划/方法/迫近信号（最可靠）
     if _RE_IMMINENT.search(combined) and (_RE_SUICIDE_INTENT.search(combined) or _RE_SELF_HARM.search(combined)):
         return "urgent", "imminent+intent"
-    if _RE_METHOD.search(combined) and (_RE_SUICIDE_INTENT.search(combined) or _RE_SELF_HARM.search(combined)):
-        return "urgent", "method+intent"
+
 
     # 3) 自杀意图（排除否定）：无迫近/方法时按 high
     for m in _RE_SUICIDE_INTENT.finditer(combined):
