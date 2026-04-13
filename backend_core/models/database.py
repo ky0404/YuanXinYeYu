@@ -27,9 +27,16 @@ def get_db():
 
 def init_db():
     """初始化数据库表（幂等，可重复执行）。"""
-    from models.user import User, ChatHistory                      # noqa: F401
-    from models.emotion_record import EmotionRecord                # noqa: F401
-    from models.guest_quota import GuestQuota                      # noqa: F401
-    from models.email_verification_code import EmailVerificationCode  # noqa: F401 ✅ v2.5
+    from models.user import User, ChatHistory                         # noqa: F401
+    from models.emotion_record import EmotionRecord                   # noqa: F401
+    from models.guest_quota import GuestQuota                         # noqa: F401
+    from models.email_verification_code import EmailVerificationCode  # noqa: F401
+
+    # ✅ v2.6 新增：用户画像表（ENABLE_USER_PROFILE=true 时使用）
+    # create_all 幂等，表已存在时跳过，不影响现有数据
+    try:
+        from models.user_profile import UserProfile  # noqa: F401
+    except ImportError:
+        pass  # 文件不存在时安全跳过（不影响其他表初始化）
 
     Base.metadata.create_all(bind=engine)
