@@ -400,14 +400,22 @@ cat eval/output/trace_*.json | python -m json.tool | head -100
 
 | 接口 | 方法 | 说明 | Langfuse追踪 |
 |------|------|------|------------|
-| `/api/emo_analysis_stream` | POST | SSE 流式情绪分析（核心接口）| ✅ 完整链路 |
+| `/api/emo_analysis_stream` | POST | SSE 流式情绪分析（核心接口） | ✅ 完整链路 |
 | `/api/emo_analysis` | POST | 非流式情绪分析 | ✅ 完整链路 |
-| `/api/auth/register` | POST | 用户注册 | ✅ 认证追踪 |
-| `/api/auth/login` | POST | 用户登录 | ✅ 认证追踪 |
+| `/api/auth/register` | POST | 用户注册（密码方式） | ✅ 认证追踪 |
+| `/api/auth/login` | POST | 用户登录（密码方式） | ✅ 认证追踪 |
+| `/api/auth/send-email-code` | POST | 发送邮箱验证码（登录/重置密码） | ✅ 邮箱验证码 |
+| `/api/auth/email-login` | POST | 邮箱验证码登录 / 自动注册 | ✅ 邮箱登录链路 |
+| `/api/auth/reset-password` | POST | 邮箱验证码找回密码 | ✅ 邮箱认证链路 |
+| `/api/auth/github/login` | GET | GitHub OAuth 获取授权 URL | ✅ 第三方登录 |
+| `/api/auth/github/callback` | GET | GitHub OAuth 回调处理 | ✅ 第三方登录 |
 | `/api/history` | GET/POST/DELETE | 对话历史管理 | ✅ 数据库操作 |
-| `/api/emotion/trends` | GET | 情绪趋势数据 | ✅ 时间序列分析 |
-| `/api/feedback` | POST | RLHF 用户反馈 | ✅ 反馈记录 |
+| `/api/emotion/trends` | GET | 情绪趋势数据（含正面率/危机统计） | ✅ 时间序列分析 |
+| `/api/emotion/records` | DELETE | 清空情绪记录（隐私保护） | ✅ 用户操作追踪 |
+| `/api/feedback` | POST | RLHF 用户反馈（点赞/踩/重生成） | ✅ 反馈记录 |
 | `/api/ws` | WebSocket | 心跳 + 取消 + 反馈控制 | ✅ 实时通信 |
+| `/api/cache/stats` | GET | 语义缓存统计信息 | ✅ 观测指标 |
+| `/api/cache/clear` | DELETE | 清空缓存（管理用途） | ✅ Maintenance |
 | `/api/health` | GET | 服务健康检查 | ✅ 可用性监控 |
 | `/metrics` | GET | Prometheus 监控指标 | ✅ Prometheus暴露 |
 
