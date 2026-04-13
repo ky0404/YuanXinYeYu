@@ -1,4 +1,4 @@
-﻿"""数据库连接与会话管理。"""
+"""数据库连接与会话管理。"""
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 from config.settings import settings
@@ -26,9 +26,10 @@ def get_db():
 
 
 def init_db():
-    """初始化数据库表。"""
-    from models.user import User, ChatHistory  # noqa: F401
-    from models.emotion_record import EmotionRecord  # noqa: F401
-    from models.guest_quota import GuestQuota  # noqa: F401
+    """初始化数据库表（幂等，可重复执行）。"""
+    from models.user import User, ChatHistory                      # noqa: F401
+    from models.emotion_record import EmotionRecord                # noqa: F401
+    from models.guest_quota import GuestQuota                      # noqa: F401
+    from models.email_verification_code import EmailVerificationCode  # noqa: F401 ✅ v2.5
 
     Base.metadata.create_all(bind=engine)
