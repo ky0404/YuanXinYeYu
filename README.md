@@ -429,7 +429,7 @@ cat eval/output/trace_*.json | python -m json.tool | head -100
 ---
 
 ## 📁 项目结构（v2.6 更新）
-
+```
 ky0404-yuanxinyeyu/
 ├── README.md
 ├── LICENSE
@@ -511,7 +511,7 @@ ky0404-yuanxinyeyu/
         ├── main.tsx
         ├── components/
         └── styles/
-
+```
 ---
 
 ## 🚢 生产部署
