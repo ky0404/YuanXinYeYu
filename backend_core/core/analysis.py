@@ -1,16 +1,18 @@
 """core/analysis.py
 情绪分析核心逻辑。
 
-v2.3 变更：
-  - analyze() 方法新增 LangGraph 可选路径（USE_LANGGRAPH=true 时启用）
-  - LangGraph 任何异常 → fallback 到旧链路，行为不变
-  - 高危纠偏逻辑、guide 生成、模板兜底等全部保留
-  - ✅透传 RAG refs：当 sentiment_result 含 "_refs" 时，最终 result 也附带 "_refs"
+v2.4 优化：
+  - _post_process 结果中同时暴露 category/score/label 别名字段
+    （与 LangGraph 内部字段保持一致，方便下游直接使用）
+  - 高危纠偏支持 urgent 级别强制覆盖
+  - 增加耗时日志
+  - 透传 _refs / _rag_route 扩展字段
 """
 from __future__ import annotations
 
 import logging
 import random
+import time
 from typing import Any, Dict, List, Optional
 
 from service.huawei_nlp import huawei_nlp_service
@@ -20,6 +22,18 @@ logger = logging.getLogger(__name__)
 
 class EmotionAnalyzer:
     """情绪分析器 — AI 回复优先，模板兜底。"""
+
+    # 高危关键词（触发强制负面纠偏）
+    _HIGH_RISK_KW = (
+        "自伤", "自杀", "轻生", "想死", "不想活",
+        "活不下去", "结束生命", "割腕", "跳楼",
+    )
+
+    # 极高危关键词（触发 urgent 纠偏 + 热线）
+    _URGENT_KW = (
+        "安眠药", "吃药轻生", "买了刀", "今晚就死",
+        "不想活了就在今天", "跳下去", "已经割了",
+    )
 
     GUIDE_TEMPLATES = {
         1: [
@@ -62,6 +76,7 @@ class EmotionAnalyzer:
             raise ValueError("输入文本不能为空")
 
         history = history or []
+        t0 = time.monotonic()
 
         from config.settings import settings  # noqa: PLC0415
 
@@ -69,18 +84,25 @@ class EmotionAnalyzer:
             try:
                 from agent.graph import run_agent  # noqa: PLC0415
                 sentiment_result = await run_agent(text, mode, history)
-                logger.info("[Analysis] LangGraph 链路成功 | mode=%s", mode)
+                elapsed = int((time.monotonic() - t0) * 1000)
+                logger.info(
+                    "[Analysis] LangGraph 链路成功 | mode=%s latency=%dms",
+                    mode, elapsed,
+                )
                 return self._post_process(text, mode, sentiment_result)
             except Exception as exc:
+                elapsed = int((time.monotonic() - t0) * 1000)
                 logger.warning(
-                    "[Analysis] LangGraph 失败，回退旧链路: %s",
-                    exc,
+                    "[Analysis] LangGraph 失败(%dms)，回退旧链路: %s",
+                    elapsed, exc,
                     exc_info=False,
                 )
 
         sentiment_result = await huawei_nlp_service.analyze_sentiment(
             text=text, mode=mode, history=history
         )
+        elapsed = int((time.monotonic() - t0) * 1000)
+        logger.info("[Analysis] 旧链路成功 | mode=%s latency=%dms", mode, elapsed)
         return self._post_process(text, mode, sentiment_result)
 
     def _post_process(
@@ -89,42 +111,61 @@ class EmotionAnalyzer:
         mode: str,
         sentiment_result: Dict[str, Any],
     ) -> Dict[str, Any]:
-        _high_risk_kw = (
-            "自伤","自杀","轻生","想死","不想活",
-            "活不下去","结束生命","割腕","跳楼",
-        )
-        if any(k in text for k in _high_risk_kw):
+        """
+        后处理：
+        1. 高危关键词纠偏（强制负面 / urgent）
+        2. 构建统一返回字段
+        3. 同时暴露 category/score/label 别名（兼容内部旧字段）
+        4. 透传扩展字段（_refs / _rag_route）
+        """
+        # ── 极高危纠偏（只纠偏情绪，不强改 risk_level，避免与主风险链路冲突）────
+        if any(k in text for k in self._URGENT_KW):
             sentiment_result["category"] = 2
-            sentiment_result["label"] = "负面"
-            sentiment_result["score"] = max(float(sentiment_result.get("score", 8.0)), 8.0)
+            sentiment_result["label"]    = "负面"
+            sentiment_result["score"]    = max(float(sentiment_result.get("score", 9.0)), 9.0)
 
-        category = sentiment_result["category"]
-        score = sentiment_result["score"]
+        # ── 普通高危纠偏 ───────────────────────────────────────────────────
+        elif any(k in text for k in self._HIGH_RISK_KW):
+            sentiment_result["category"] = 2
+            sentiment_result["label"]    = "负面"
+            sentiment_result["score"]    = max(float(sentiment_result.get("score", 8.0)), 8.0)
+
+
+        category = sentiment_result.get("category", 4)
+        score    = float(sentiment_result.get("score", 5.0))
+        label    = sentiment_result.get("label", "中性")
 
         ai_reply = sentiment_result.get("reply", "")
         if not ai_reply:
             ai_reply = self._mode_fallback_reply(mode, category)
 
-        keywords = sentiment_result.get("keywords", [])
+        keywords   = sentiment_result.get("keywords", [])
         guide_text = self._generate_guide(category=category, score=score)
 
         result: Dict[str, Any] = {
+            # ── 主字段（前端/评测使用）──────────────────────────────────
             "sentiment_category": category,
-            "sentiment_score": score,
-            "sentiment_label": sentiment_result.get("label", "中性"),
-            "reply": ai_reply,
-            "guide": guide_text,
-            "keywords": keywords,
-            "mode": mode,
+            "sentiment_score":    score,
+            "sentiment_label":    label,
+            "reply":              ai_reply,
+            "guide":              guide_text,
+            "keywords":           keywords,
+            "mode":               mode,
+
+            # ✅ 别名字段（供内部旧链路/LangGraph 使用；正式对外仍以 sentiment_* 为准）──────────────────
+            "category": category,
+            "score":    score,
+            "label":    label,
         }
 
-        # ✅透传 refs（以及未来扩展字段）
-        if "_refs" in sentiment_result:
-            result["_refs"] = sentiment_result["_refs"]
+        # ✅ 透传扩展字段（不影响主流程）
+        for ext_key in ("_refs", "_rag_route"):
+            if ext_key in sentiment_result:
+                result[ext_key] = sentiment_result[ext_key]
 
         logger.info(
             "分析完成 | label=%s score=%.1f keywords=%s mode=%s",
-            result["sentiment_label"], score, keywords, mode,
+            label, score, keywords, mode,
         )
         return result
 
@@ -132,8 +173,10 @@ class EmotionAnalyzer:
         templates = self.GUIDE_TEMPLATES.get(category, self.GUIDE_TEMPLATES[4])
         if category == 2 and score < 3.0:
             return random.choice([
-                "你现在承受的压力真的很大。先照顾好自己的身体，如果感觉很难独自承受，也可以寻求专业帮助——这不是软弱，是勇敢。",
-                "感觉撑不住的时候，先停下来，深呼吸几次。你不是一个人，总有人愿意陪你一起面对。",
+                "你现在承受的压力真的很大。先照顾好自己的身体，如果感觉很难独自承受，"
+                "也可以寻求专业帮助——这不是软弱，是勇敢。",
+                "感觉撑不住的时候，先停下来，深呼吸几次。"
+                "你不是一个人，总有人愿意陪你一起面对。",
             ])
         guide = random.choice(templates)
         return guide[:200] + "..." if len(guide) > 200 else guide
