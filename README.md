@@ -86,6 +86,10 @@ Trace Breakdown:
 | 📊 情绪趋势追踪 | ECharts + 时间序列分析 | 7天/30天情绪变化曲线，AI自动生成洞察 | emotion_record表时间序列 |
 | 🔒 隐私安全 | JWT + HttpOnly Cookie + 数据脱敏 | 游客模式 + 一键清空，符合GDPR | GuestQuota表管理 |
 | 📈 全链路监控 | Prometheus + Langfuse | `/metrics` 端点 + 链路追踪 + 结构化日志 | systemd journal可查 |
+| 📧 邮箱验证码登录 | SMTP + 数据库验证码表 | 一键登录/自动注册，支持找回密码 | ✅ 生产验证 |
+| 🔑 密码登录/注册 | JWT + HttpOnly Cookie | 传统账密方式，支持密码重置 | ✅ 原有功能 |
+| 🐙 GitHub OAuth | OAuth 2.0 授权流 | 一键授权，自动创建/绑定账户 | ✅ v2.5新增 |
+
 
 ---
 
@@ -413,70 +417,94 @@ cat eval/output/trace_*.json | python -m json.tool | head -100
 
 ```
 ky0404-yuanxinyeyu/
-├── backend_core/
-│   ├── main.py                    # 服务启动入口
+├── README.md
+├── LICENSE
+│
+├── backend_core/                              # 后端核心
+│   ├── main.py                                # 服务启动入口
 │   ├── requirements.txt
-│   ├── agent/
-│   │   ├── graph.py               # LangGraph 4节点状态机
-│   │   │   ├─ risk_detect_node    # 危机识别（150ms）
-│   │   ├─ rag_retrieve_node       # RAG检索（820ms）
-│   │   ├─ llm_generate_node       # AI生成（1200ms）
-│   │   └─ safety_check_node       # 安全检查（50ms）
-│   │   └── langfuse_client.py     # Langfuse 追踪客户端（682条Traces）
-│   ├── api/
-│   │   ├── main.py                # FastAPI 应用工厂
+│
+│   ├── agent/                                 # AI 流程控制模块（LangGraph）
+│   │   ├── graph.py                           # LangGraph 4节点状态机（risk→rag→llm→safety）
+│   │   │   ├─ risk_detect_node                # 危机识别（150ms）
+│   │   │   ├─ rag_retrieve_node               # 三混合 RAG（820ms）
+│   │   │   ├─ llm_generate_node               # AI 回复生成（1200ms）
+│   │   │   └─ safety_check_node               # 安全后处理（50ms）
+│   │   └── langfuse_client.py                 # Langfuse 链路追踪客户端（682条 Traces）
+│
+│   ├── api/                                   # FastAPI 路由接口
+│   │   ├── main.py                            # 应用工厂入口
 │   │   └── routes/
-│   │       ├── emo_route.py       # 情绪分析路由
-│   │       ├── stream_route.py    # SSE 流式路由（token逐字）
-│   │       ├── ws_route.py        # WebSocket 控制路由
-│   │       ├── auth_route.py      # 认证路由
-│   │       ├── history_route.py   # 历史与趋势路由
-│   │       └── feedback_route.py  # RLHF 反馈路由
+│   │       ├── emo_route.py                   # v3.2 情绪分析主接口（含耗时日志与容错）
+│   │       ├── stream_route.py                # SSE 实时输出（token流式推送）
+│   │       ├── ws_route.py                    # WebSocket 控制（RLHF 点赞/重生成）
+│   │       ├── auth_route.py                  # v2.5 用户认证 | 密码注册 + 邮箱 + GitHub OAuth
+│   │       ├── history_route.py               # v2.4 对话历史 & 情绪趋势接口（含 positive_rate）
+│   │       └── feedback_route.py              # RLHF 用户反馈接口
+│
 │   ├── config/
-│   │   ├── settings.py            # 环境变量配置
-│   │   └── logging_config.py      # 结构化日志（JSON格式）
+│   │   ├── settings.py                        # ✅ v2.5 配置项（SMTP / OAuth / 频控 / 限流）
+│   │   └── logging_config.py                  # JSON 结构化日志配置
+│
 │   ├── core/
-│   │   └── analysis.py            # 情绪分析核心（LangGraph入口+降级链）
-│   ├── rag/
-│   │   ├── router.py              # Self-RAG 智能路由
-│   │   │   ├─ route=vector (60.4%, 412/682)
-│   │   │   ├─ route=graph (27.1%, 185/682)
-│   │   │   ├─ route=hybrid (9.5%, 65/682)
-│   │   │   └─ route=none (3.0%, 20/682)
-│   │   ├── bm25_retriever.py      # BM25 关键词检索（25条文档）
-│   │   ├── self_rag/              # Self-RAG 路由决策
-│   │   ├── vector_store/          # ChromaDB 向量检索
-│   │   ├── graph/                 # SQLite 知识图谱
-│   │   ├── hybrid/                # RRF 混合融合
-│   │   └── providers/             # 华为云 bge-m3 嵌入 API
-│   ├── service/
-│   │   ├── huawei_nlp.py          # 华为云 LLM 服务封装
-│   │   ├── cache_service.py       # 语义缓存（命中率35%）
-│   │   └── rag_service.py         # RAG 服务层
-│   ├── models/
-│   │   ├── database.py            # SQLAlchemy 连接配置
-│   │   ├── user.py                # 用户 + 对话历史模型
-│   │   ├── emotion_record.py      # 情绪记录模型（时间序列）
-│   │   └── guest_quota.py         # 游客配额模型（IP+日期+计数，前置<50ms）
+│   │   └── analysis.py                        # LangGraph 入口 + 降级链路（情绪分析核心逻辑）
+│
+│   ├── rag/                                   # 检索增强（Retrieval Augmented Generation）
+│   │   ├── router.py                          # Self-RAG 智能路由（自动选择 Vector/Graph/Hybrid）
+│   │   ├── bm25_retriever.py                  # BM25 关键词检索
+│   │   ├── self_rag/                          # RAG 路由策略模块
+│   │   ├── vector_store/                      # 向量存储（ChromaDB）
+│   │   ├── graph/                             # GraphRAG 知识图谱（SQLite 实现）
+│   │   ├── hybrid/                            # Hybrid-RAG 融合模式（RRF）
+│   │   └── providers/                         # 外部嵌入服务（华为云 bge-m3）
+│
+│   ├── service/                               # 服务层
+│   │   ├── huawei_nlp.py                      # 华为云 LLM 封装
+│   │   ├── email_service.py                   # ✅ v2.5 邮箱验证码发送（SMTP）
+│   │   ├── cache_service.py                   # 语义缓存服务（命中率35%）
+│   │   └── rag_service.py                     # RAG 检索服务入口
+│
+│   ├── models/                                # ORM 数据模型
+│   │   ├── database.py                        # SQLAlchemy 引擎与会话
+│   │   ├── user.py                            # 用户与历史表
+│   │   ├── emotion_record.py                  # 情绪记录表（时间序列）
+│   │   ├── guest_quota.py                     # 游客额度表（前置检查<50ms）
+│   │   └── email_verification_code.py         # ✅ v2.5 邮箱验证码记录表（带限频索引）
+│
 │   ├── knowledge/
-│   │   └── emotion_knowledge.py   # 心理学知识库内容（25条）
-│   ├── eval/
-│   │   ├── run_eval.py            # 自动化评测脚本（100条用例）
-│   │   ├── dataset.jsonl          # 测试用例集合
-│   │   └── output/                # 评测结果
-│   │       ├── report_*.md        # 详细报告（成功率100%）
-│   │       ├── results_*.csv      # 数据表（每条用例一行）
-│   │       └── trace_*.json       # Langfuse链路追踪JSON
-│   └── utils/
-│       ├── auth.py                # JWT 工具函数
-│       ├──response.py            # 统一响应格式
-│       └── request.py             # HTTP 请求工具
-└── frontend_core/
-    ├── index.html
+│   │   └── emotion_knowledge.py               # 心理学知识库（25 条文档）
+│
+│   ├── eval/                                  # 自动化评测模块
+│   │   ├── run_eval.py                        # 一键运行评测（100条用例）
+│   │   ├── dataset.jsonl                      # 测试集
+│   │   └── output/
+│   │       ├── report_*.md                    # 评测报告
+│   │       ├── results_*.csv                  # 结构化统计表
+│   │       └── trace_*.json                   # Langfuse 追踪 JSON
+│
+│   ├── utils/
+│   │   ├── auth.py                            # JWT 认证与密码加密
+│   │   ├── request.py                         # HTTP 请求工具
+│   │   └── response.py                        # 统一成功/失败响应封装
+│
+│   └── scripts/
+│       ├── build_knowledge_db.py              # 构建知识库
+│       ├── init_rag_demo.py                   # 初始化 RAG 示例数据
+│       ├── migrate_feedback.py                # 反馈数据迁移脚本
+│       └── validate_kb.py                     # 知识库有效性验证
+│
+└── frontend_core/                             # 前端核心
+    ├── README.md
+    ├── package.json
     ├── vite.config.ts
+    ├── index.html
     └── src/
-        ├── App.tsx                # 主应用组件（SSE流式输出）
-        └── main.tsx               # React 入口
+        ├── App.tsx                            # 主应用组件（SSE 实时输出）
+        ├── main.tsx                           # 启动入口
+        ├── components/                        # 子组件（登录窗、趋势图）
+        ├── index.css / App.css                # 全局样式
+        └── vite-env.d.ts
+
 ```
 
 ---
