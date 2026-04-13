@@ -1,4 +1,9 @@
-"""config/settings.py v2.3 — 新增游客限流、BM25、RAG引用、Verbose日志开关"""
+"""config/settings.py v2.5
+在 v2.4 基础上新增：
+  - SMTP 邮件服务配置
+  - 邮箱验证码频控配置
+  - 微信 OAuth 配置（可选）
+"""
 import os
 import secrets
 from pathlib import Path
@@ -17,7 +22,7 @@ class Settings(BaseSettings):
 
     # ── 服务 ──────────────────────────────────────────────────
     APP_NAME:    str = "情绪分析心理疏导服务"
-    APP_VERSION: str = "2.3.0"
+    APP_VERSION: str = "2.5.0"
     HOST:        str = os.getenv("HOST", "127.0.0.1")
     PORT:        int = int(os.getenv("PORT", "8000"))
 
@@ -41,7 +46,7 @@ class Settings(BaseSettings):
     REQUEST_RETRY:    int   = int(os.getenv("REQUEST_RETRY", "3"))
     RETRY_BASE_DELAY: float = float(os.getenv("RETRY_BASE_DELAY", "1.0"))
 
-    # ── 离线保护（旧 RAG 遗留）──────────────────────────────
+    # ── 离线保护 ──────────────────────────────────────────────
     TRANSFORMERS_OFFLINE:    bool = os.getenv("TRANSFORMERS_OFFLINE",    "0") == "1"
     HF_DATASETS_OFFLINE:     bool = os.getenv("HF_DATASETS_OFFLINE",     "0") == "1"
     HUGGINGFACE_HUB_OFFLINE: bool = os.getenv("HUGGINGFACE_HUB_OFFLINE", "0") == "1"
@@ -64,43 +69,59 @@ class Settings(BaseSettings):
     # ── RAG：知识图谱 SQLite ──────────────────────────────────
     KG_SQLITE_PATH: str = os.getenv("KG_SQLITE_PATH", "./data/kg.sqlite")
 
-    # ── AutoGen 预留开关 ──────────────────────────────────────
-    AUTOGEN_ENABLED: bool = os.getenv("AUTOGEN_ENABLED", "false").lower() == "true"
+    # ── 特性开关 ──────────────────────────────────────────────
+    AUTOGEN_ENABLED:    bool = os.getenv("AUTOGEN_ENABLED",    "false").lower() == "true"
+    USE_LANGGRAPH:      bool = os.getenv("USE_LANGGRAPH",      "false").lower() == "true"
+    LANGFUSE_ENABLED:   bool = os.getenv("LANGFUSE_ENABLED",   "false").lower() == "true"
+    LANGFUSE_PUBLIC_KEY: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+    LANGFUSE_SECRET_KEY: str = os.getenv("LANGFUSE_SECRET_KEY", "")
+    LANGFUSE_HOST:       str = os.getenv("LANGFUSE_HOST",       "https://cloud.langfuse.com")
 
-    # ── LangGraph 特性开关（默认 false）──────────────────────
-    USE_LANGGRAPH: bool = os.getenv("USE_LANGGRAPH", "false").lower() == "true"
-
-    # ── Langfuse 可观测性（默认 false）───────────────────────
-    LANGFUSE_ENABLED:    bool = os.getenv("LANGFUSE_ENABLED",    "false").lower() == "true"
-    LANGFUSE_PUBLIC_KEY: str  = os.getenv("LANGFUSE_PUBLIC_KEY", "")
-    LANGFUSE_SECRET_KEY: str  = os.getenv("LANGFUSE_SECRET_KEY", "")
-    LANGFUSE_HOST:       str  = os.getenv("LANGFUSE_HOST",       "https://cloud.langfuse.com")
-
-    # ════════════════════════════════════════════════════════════
-    # 新增 v2.3
-    # ════════════════════════════════════════════════════════════
-
-    # ── 游客每日额度上限（默认 5 次，可调整）────────────────
+    # ── 游客限流 ──────────────────────────────────────────────
     GUEST_DAILY_LIMIT: int = int(os.getenv("GUEST_DAILY_LIMIT", "5"))
 
-    # ── BM25 检索开关（P1，默认关闭）────────────────────────
+    # ── BM25 ─────────────────────────────────────────────────
     ENABLE_BM25:   bool  = os.getenv("ENABLE_BM25",  "false").lower() == "true"
     BM25_WEIGHT:   float = float(os.getenv("BM25_WEIGHT", "0.3"))
-    # RRF k 参数（Reciprocal Rank Fusion），60 是业界惯例
     BM25_RRF_K:    int   = int(os.getenv("BM25_RRF_K", "60"))
 
-    # ── RAG 引用溯源（P1，默认关闭）─────────────────────────
-    # true 时在 data._refs 返回检索来源（前端不强依赖此字段）
-    ENABLE_RAG_REFS: bool = os.getenv("ENABLE_RAG_REFS", "false").lower() == "true"
-
-    # ── 节点状态详细日志（P1，默认关闭）─────────────────────
+    # ── RAG 开关 ──────────────────────────────────────────────
+    ENABLE_RAG_REFS:    bool = os.getenv("ENABLE_RAG_REFS",    "false").lower() == "true"
     ENABLE_VERBOSE_LOG: bool = os.getenv("ENABLE_VERBOSE_LOG", "false").lower() == "true"
 
-    # ── Eval LLM-as-judge（P0.3，默认关闭）──────────────────
-    EVAL_LLM_JUDGE: bool = os.getenv("EVAL_LLM_JUDGE", "false").lower() == "true"
+    # ── Eval ──────────────────────────────────────────────────
+    EVAL_LLM_JUDGE:       bool = os.getenv("EVAL_LLM_JUDGE", "false").lower() == "true"
+    EVAL_NO_CACHE_HEADER: str  = os.getenv("EVAL_NO_CACHE_HEADER", "X-Eval-No-Cache")
 
-    # ── Eval 跳过缓存的特殊请求头（内部用，无需对外文档）───
-    EVAL_NO_CACHE_HEADER: str = os.getenv("EVAL_NO_CACHE_HEADER", "X-Eval-No-Cache")
+    # ── v2.4 配置项 ───────────────────────────────────────────
+    STREAM_TOKEN_DELAY_MS:      int   = int(os.getenv("STREAM_TOKEN_DELAY_MS", "28"))
+    MAX_HISTORY_TURNS:          int   = int(os.getenv("MAX_HISTORY_TURNS", "500"))
+    ENABLE_RESPONSE_TIME_LOG:   bool  = os.getenv("ENABLE_RESPONSE_TIME_LOG", "true").lower() == "true"
+    CACHE_SIMILARITY_THRESHOLD: float = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.92"))
+
+    # ════════════════════════════════════════════════════════════
+    # ✅ v2.5 新增：SMTP 邮件服务配置
+    # ════════════════════════════════════════════════════════════
+    SMTP_HOST:      str = os.getenv("SMTP_HOST", "")
+    SMTP_PORT:      int = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USER:      str = os.getenv("SMTP_USER", "")
+    SMTP_PASSWORD:  str = os.getenv("SMTP_PASSWORD", "")
+    SMTP_FROM_EMAIL: str = os.getenv("SMTP_FROM_EMAIL", "")
+    SMTP_FROM_NAME:  str = os.getenv("SMTP_FROM_NAME", "媛心烨语")
+
+    # ✅ v2.5 新增：验证码频控
+    EMAIL_CODE_EXPIRE_MINUTES: int = int(os.getenv("EMAIL_CODE_EXPIRE_MINUTES", "5"))
+    EMAIL_CODE_RESEND_SECONDS: int = int(os.getenv("EMAIL_CODE_RESEND_SECONDS", "60"))
+    EMAIL_CODE_DAILY_LIMIT:    int = int(os.getenv("EMAIL_CODE_DAILY_LIMIT", "20"))
+
+    # ✅ v2.5 新增：GitHub OAuth
+    GITHUB_CLIENT_ID:     str = os.getenv("GITHUB_CLIENT_ID", "")
+    GITHUB_CLIENT_SECRET: str = os.getenv("GITHUB_CLIENT_SECRET", "")
+    GITHUB_REDIRECT_URI:  str = os.getenv("GITHUB_REDIRECT_URI", "")
+    GITHUB_SCOPE:         str = os.getenv("GITHUB_SCOPE", "read:user user:email")
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "https://www.dukkha.top")
+
+
 
     # ── CORS ──────────────────────────────────────────────────
     @property
@@ -112,7 +133,6 @@ class Settings(BaseSettings):
             return ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"]
         return ["https://www.dukkha.top", "https://dukkha.top"]
 
-    # ── 情绪分类映射 ──────────────────────────────────────────
     SENTIMENT_CATEGORIES: dict = {
         1: "正面", 2: "负面", 3: "正负混合", 4: "中性", 5: "不相关"
     }
