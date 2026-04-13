@@ -1,17 +1,10 @@
-"""agent/graph.py
+"""agent/graph.py v2.6
 LangGraph 有状态工作流（USE_LANGGRAPH=true 时才会被导入）
 
-工作流节点（线性 Pipeline）：
-  risk_detect  → 四级风险识别
-  rag_retrieve → 三混合 RAG 检索（复用 rag.router.RagRouter）
-  llm_generate → 调用华为云 LLM（复用 huawei_nlp 内部方法）
-  safety_check → urgent/high 场景安全后处理
-
-优化（v2.4）：
-  - AgentState 新增 rag_route 字段，便于日志/Langfuse 可观测
-  - safety_check 补充 high 级别软提示（urgent 强制热线，high 建议专业资源）
-  - 各节点日志更丰富，方便线上排查
-  - 所有节点 state 返回改用 dict 解包，避免引用污染
+v2.6 变更：
+  ★ BUG FIX：node_safety_check 中 "high" 分支缩进错误（嵌套在 urgent 内）→ 已修复
+  - 新增 _apply_prompt_enhancements()：可选 Prompt 增强（RAG 防幻觉/脆弱引导/情绪镜像）
+  - node_llm_generate 调用增强函数，所有增强默认关闭，出问题直接关开关回滚
 """
 from __future__ import annotations
 
@@ -28,7 +21,7 @@ except ImportError:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 全局状态定义
+# 全局状态定义（不变）
 # ─────────────────────────────────────────────────────────────────────────────
 
 class AgentState(TypedDict):
@@ -36,16 +29,74 @@ class AgentState(TypedDict):
     text:        str
     mode:        str
     history:     List[Dict[str, Any]]
-    risk_level:  str                   # low | medium | high | urgent
-    rag_context: str                   # 注入 Prompt 的 RAG 上下文
-    rag_route:   str                   # ✅ v2.4 RAG 路由类型（vector/graph/hybrid/none）
-    rag_refs:    List[Dict[str, Any]]  # RAG 引用元数据（用于返回/落库）
-    result:      Dict[str, Any]        # 最终分析结果
-    _start_time: float                 # ✅ v2.4 请求开始时间戳（用于耗时统计）
+    risk_level:  str
+    rag_context: str
+    rag_route:   str
+    rag_refs:    List[Dict[str, Any]]
+    result:      Dict[str, Any]
+    _start_time: float
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 节点 1：风险识别
+# ✅ v2.6 新增：Prompt 增强辅助函数（纯函数，不影响任何现有逻辑）
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _apply_prompt_enhancements(rag_context: str, risk_level: str) -> str:
+    """
+    根据 feature flags 对 rag_context 追加约束/引导指令。
+
+    设计思路：
+    - 这些指令随 rag_context 一同注入 build_system_prompt，无需修改 huawei_nlp.py
+    - 每项增强都有独立开关，出问题单独关闭，互不影响
+    - 纯字符串追加，任何异常都有 try/except 保护
+
+    当 USE_LANGGRAPH=false 时，此函数不会被调用，旧链路完全不受影响。
+    """
+    try:
+        from config.settings import settings  # noqa: PLC0415
+
+        enhanced = rag_context
+
+        # ── 1. RAG 防幻觉约束（ENABLE_RAG_GROUNDING）──────────────────────
+        # 只有在有 RAG 上下文时才追加，无上下文时追加无意义
+        if settings.ENABLE_RAG_GROUNDING and enhanced:
+            enhanced += (
+                "\n\n[严格约束] 你的回复必须基于上方专业知识，"
+                "不得捏造任何未在上文中提及的热线号码、机构名称或具体资源。"
+                "若上文未提供相关资源，可温和建议用户向学校心理中心或专业机构寻求帮助。"
+            )
+
+        # ── 2. 脆弱信号主动引导（ENABLE_VULNERABILITY_PROBE）─────────────
+        # medium/high 时追加温和开放式问题引导，营造被接纳的空间
+        if settings.ENABLE_VULNERABILITY_PROBE and risk_level in ("medium", "high", "urgent"):
+            enhanced += (
+                "\n\n[引导策略] 当用户出现压抑或回避迹象时，可用温和的开放式问题引导，"
+                "如'这种感觉持续多久了？'或'能多跟我说说发生了什么吗？'"
+                "目的是创造被接纳的空间，不要急于给出方案，先让对方感到被看见。"
+            )
+
+        # ── 3. 情绪镜像风格匹配（ENABLE_EMOTION_MIRROR）─────────────────
+        # 根据 risk_level 给出语气风格要求
+        if settings.ENABLE_EMOTION_MIRROR:
+            _mirror_map = {
+                "urgent": "请用极度温柔、缓慢而有力量的语气回应，先让对方感到被接住，不要急于给建议。",
+                "high":   "请用充分共情的语气，先承认并反映对方的情绪，再温和引导。",
+                "medium": "请用温暖稳定的语气，适当融入具体的关心与陪伴。",
+                "low":    "保持自然亲切的语气即可。",
+            }
+            style_hint = _mirror_map.get(risk_level, _mirror_map["low"])
+            enhanced += f"\n\n[回复风格] {style_hint}"
+
+        return enhanced
+
+    except Exception as exc:
+        # 增强失败不影响主流程，返回原始 rag_context
+        logger.warning("[LG] _apply_prompt_enhancements 失败，使用原始 context: %s", exc)
+        return rag_context
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 节点 1：风险识别（不变）
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def node_risk_detect(state: AgentState) -> AgentState:
@@ -67,14 +118,11 @@ async def node_risk_detect(state: AgentState) -> AgentState:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 节点 2：RAG 检索
+# 节点 2：RAG 检索（不变）
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def node_rag_retrieve(state: AgentState) -> AgentState:
-    """
-    节点 2：三混合 RAG 检索。
-    失败时 rag_context 置空、rag_refs 置空（不阻断流程）。
-    """
+    """节点 2：三混合 RAG 检索，失败时置空不阻断流程。"""
     rag_context: str = ""
     rag_refs: List[Dict[str, Any]] = []
     rag_route: str = "none"
@@ -99,7 +147,6 @@ async def node_rag_retrieve(state: AgentState) -> AgentState:
                 top_k=4,
             )
 
-        # ✅ 尝试从 router 获取实际路由类型（如果 router 支持）
         rag_route = getattr(router, "_last_route", None) or "unknown"
 
         elapsed = int((time.monotonic() - t0) * 1000)
@@ -120,7 +167,7 @@ async def node_rag_retrieve(state: AgentState) -> AgentState:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 节点 3：LLM 生成
+# 节点 3：LLM 生成（新增 prompt 增强调用）
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def node_llm_generate(state: AgentState) -> AgentState:
@@ -131,14 +178,18 @@ async def node_llm_generate(state: AgentState) -> AgentState:
     )
     from config.settings import settings  # noqa: PLC0415
 
-    mode        = state["mode"]
-    rag_context = state.get("rag_context", "")
-    risk_level  = state.get("risk_level", "low")
-    t0          = time.monotonic()
+    mode       = state["mode"]
+    risk_level = state.get("risk_level", "low")
+    t0         = time.monotonic()
+
+    # ✅ v2.6：可选 Prompt 增强（对 rag_context 追加约束/引导）
+    # 所有增强默认关闭，失败自动回退原始 context，零侵入
+    raw_rag_context = state.get("rag_context", "")
+    effective_rag_context = _apply_prompt_enhancements(raw_rag_context, risk_level)
 
     system_prompt = build_system_prompt(
         mode=mode,
-        rag_context=rag_context,
+        rag_context=effective_rag_context,
         risk_level=risk_level,
     )
 
@@ -167,7 +218,7 @@ async def node_llm_generate(state: AgentState) -> AgentState:
             text=state["text"],
             mode=mode,
             history=state.get("history", []),
-            rag_context=rag_context,
+            rag_context=effective_rag_context,  # 使用增强后的 context
             risk_level=risk_level,
         )
         trace.end_llm(output=result)
@@ -189,7 +240,7 @@ async def node_llm_generate(state: AgentState) -> AgentState:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 节点 4：安全后处理
+# 节点 4：安全后处理（★ BUG FIX：修复 "high" 分支永远不执行的缩进 bug）
 # ─────────────────────────────────────────────────────────────────────────────
 
 _URGENT_HOTLINE = (
@@ -205,8 +256,8 @@ _HIGH_SOFT_HINT = (
 async def node_safety_check(state: AgentState) -> AgentState:
     """
     节点 4：安全后处理。
-    - urgent：强制追加心理援助热线（400-161-9995）
-    - high：追加专业咨询软提示（如果回复中没有）
+    ★ BUG FIX v2.6：原代码 'elif risk_level == "high"' 错误缩进在 urgent 的内层
+    if/elif 链中，导致 high 分支永远不执行。本次修复将其提升到与 urgent 同级。
     """
     result     = dict(state.get("result", {}))
     risk_level = state.get("risk_level", "low")
@@ -221,13 +272,14 @@ async def node_safety_check(state: AgentState) -> AgentState:
             result["reply"] = _URGENT_HOTLINE.strip()
             action = "hotline_only"
 
-        elif risk_level == "high":
-        # 软提示：如果回复中已经包含咨询/热线/心理中心等内容则跳过，避免重复
-            if reply and all(k not in reply for k in ("心理咨询", "咨询", "心理中心", "热线", "专业帮助")):
-                result["reply"] = reply + _HIGH_SOFT_HINT
-                action = "soft_hint_appended"
+    elif risk_level == "high":
+        # ★ 修复：此处原为错误缩进（在 urgent 的 elif 内），已修正为与 urgent 同级
+        # 软提示：如果回复中已包含咨询/热线/专业帮助相关内容则跳过，避免重复
+        _soft_hint_keywords = ("心理咨询", "咨询", "心理中心", "热线", "专业帮助", "心理援助")
+        if reply and all(k not in reply for k in _soft_hint_keywords):
+            result["reply"] = reply + _HIGH_SOFT_HINT
+            action = "soft_hint_appended"
 
-    # ✅ 总耗时统计（从 AgentState._start_time 算起）
     start_time = state.get("_start_time", 0)
     total_ms   = int((time.monotonic() - start_time) * 1000) if start_time else 0
 
@@ -239,7 +291,7 @@ async def node_safety_check(state: AgentState) -> AgentState:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 辅助：空 Langfuse 上下文
+# 辅助：空 Langfuse 上下文（不变）
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _NullContext:
@@ -252,7 +304,7 @@ class _NullContext:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 图编译（懒加载单例）
+# 图编译（懒加载单例，不变）
 # ─────────────────────────────────────────────────────────────────────────────
 
 _compiled_graph: Any = None
@@ -287,7 +339,7 @@ def _get_graph():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 对外入口
+# 对外入口（签名不变，完全兼容现有调用）
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def run_agent(
@@ -297,6 +349,7 @@ async def run_agent(
 ) -> Dict[str, Any]:
     """
     运行 LangGraph Agent，返回结果字典（与 huawei_nlp_service.analyze_sentiment 格式一致）。
+    函数签名不变，完全兼容现有 analysis.py 调用。
     """
     graph = _get_graph()
 
@@ -325,13 +378,12 @@ async def run_agent(
             f"[LG] Agent 返回无效结果: {list(result.keys()) if result else 'empty'}"
         )
 
-    # ✅ 把 refs 和 rag_route 挂回 result，让上层统一后处理
-    result = dict(result)
-    rag_refs = final_state.get("rag_refs", []) or []
+    result    = dict(result)
+    rag_refs  = final_state.get("rag_refs", []) or []
+    rag_route = final_state.get("rag_route", "")
+
     if rag_refs:
         result["_refs"] = rag_refs
-
-    rag_route = final_state.get("rag_route", "")
     if rag_route:
         result["_rag_route"] = rag_route
 
