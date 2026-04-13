@@ -1,8 +1,8 @@
-"""config/settings.py v2.5
-在 v2.4 基础上新增：
-  - SMTP 邮件服务配置
-  - 邮箱验证码频控配置
-  - 微信 OAuth 配置（可选）
+"""config/settings.py v2.6
+在 v2.5 基础上新增（全部默认关闭）：
+  - SSE 增强功能开关：thinking / breathing / guide
+  - Prompt 增强功能开关：grounding / vulnerability_probe / emotion_mirror
+  - 用户画像功能开关：user_profile / followup_task
 """
 import os
 import secrets
@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     # ── 服务 ──────────────────────────────────────────────────
     APP_NAME:    str = "情绪分析心理疏导服务"
-    APP_VERSION: str = "2.5.0"
+    APP_VERSION: str = "2.6.0"
     HOST:        str = os.getenv("HOST", "127.0.0.1")
     PORT:        int = int(os.getenv("PORT", "8000"))
 
@@ -70,12 +70,12 @@ class Settings(BaseSettings):
     KG_SQLITE_PATH: str = os.getenv("KG_SQLITE_PATH", "./data/kg.sqlite")
 
     # ── 特性开关 ──────────────────────────────────────────────
-    AUTOGEN_ENABLED:    bool = os.getenv("AUTOGEN_ENABLED",    "false").lower() == "true"
-    USE_LANGGRAPH:      bool = os.getenv("USE_LANGGRAPH",      "false").lower() == "true"
-    LANGFUSE_ENABLED:   bool = os.getenv("LANGFUSE_ENABLED",   "false").lower() == "true"
-    LANGFUSE_PUBLIC_KEY: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
-    LANGFUSE_SECRET_KEY: str = os.getenv("LANGFUSE_SECRET_KEY", "")
-    LANGFUSE_HOST:       str = os.getenv("LANGFUSE_HOST",       "https://cloud.langfuse.com")
+    AUTOGEN_ENABLED:     bool = os.getenv("AUTOGEN_ENABLED",    "false").lower() == "true"
+    USE_LANGGRAPH:       bool = os.getenv("USE_LANGGRAPH",      "false").lower() == "true"
+    LANGFUSE_ENABLED:    bool = os.getenv("LANGFUSE_ENABLED",   "false").lower() == "true"
+    LANGFUSE_PUBLIC_KEY: str  = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+    LANGFUSE_SECRET_KEY: str  = os.getenv("LANGFUSE_SECRET_KEY", "")
+    LANGFUSE_HOST:       str  = os.getenv("LANGFUSE_HOST",       "https://cloud.langfuse.com")
 
     # ── 游客限流 ──────────────────────────────────────────────
     GUEST_DAILY_LIMIT: int = int(os.getenv("GUEST_DAILY_LIMIT", "5"))
@@ -99,9 +99,7 @@ class Settings(BaseSettings):
     ENABLE_RESPONSE_TIME_LOG:   bool  = os.getenv("ENABLE_RESPONSE_TIME_LOG", "true").lower() == "true"
     CACHE_SIMILARITY_THRESHOLD: float = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.92"))
 
-    # ════════════════════════════════════════════════════════════
-    # ✅ v2.5 新增：SMTP 邮件服务配置
-    # ════════════════════════════════════════════════════════════
+    # ── v2.5 配置项 ───────────────────────────────────────────
     SMTP_HOST:      str = os.getenv("SMTP_HOST", "")
     SMTP_PORT:      int = int(os.getenv("SMTP_PORT", "587"))
     SMTP_USER:      str = os.getenv("SMTP_USER", "")
@@ -109,19 +107,58 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str = os.getenv("SMTP_FROM_EMAIL", "")
     SMTP_FROM_NAME:  str = os.getenv("SMTP_FROM_NAME", "媛心烨语")
 
-    # ✅ v2.5 新增：验证码频控
     EMAIL_CODE_EXPIRE_MINUTES: int = int(os.getenv("EMAIL_CODE_EXPIRE_MINUTES", "5"))
     EMAIL_CODE_RESEND_SECONDS: int = int(os.getenv("EMAIL_CODE_RESEND_SECONDS", "60"))
     EMAIL_CODE_DAILY_LIMIT:    int = int(os.getenv("EMAIL_CODE_DAILY_LIMIT", "20"))
 
-    # ✅ v2.5 新增：GitHub OAuth
     GITHUB_CLIENT_ID:     str = os.getenv("GITHUB_CLIENT_ID", "")
     GITHUB_CLIENT_SECRET: str = os.getenv("GITHUB_CLIENT_SECRET", "")
     GITHUB_REDIRECT_URI:  str = os.getenv("GITHUB_REDIRECT_URI", "")
     GITHUB_SCOPE:         str = os.getenv("GITHUB_SCOPE", "read:user user:email")
-    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "https://www.dukkha.top")
+    FRONTEND_URL:         str = os.getenv("FRONTEND_URL", "https://www.dukkha.top")
 
+    # ════════════════════════════════════════════════════════════
+    # ✅ v2.6 新增：SSE 增强功能开关（全部默认关闭）
+    # ════════════════════════════════════════════════════════════
 
+    # SSE thinking 事件：分析前先推送"正在感受..."改善等待 UX
+    # 开启方式：ENABLE_SSE_THINKING=true
+    # 回滚方式：ENABLE_SSE_THINKING=false（或删除该配置）
+    ENABLE_SSE_THINKING: bool = os.getenv("ENABLE_SSE_THINKING", "false").lower() == "true"
+
+    # 呼吸节奏输出：高痛苦状态下放慢打字速度，营造陪伴感
+    # 触发条件：sentiment_category==2 且 score >= BREATHING_SCORE_THRESHOLD
+    ENABLE_BREATHING_PAUSE:      bool  = os.getenv("ENABLE_BREATHING_PAUSE",      "false").lower() == "true"
+    BREATHING_TOKEN_DELAY_MS:    int   = int(os.getenv("BREATHING_TOKEN_DELAY_MS",    "45"))   # 高痛苦时每字间隔 ms
+    BREATHING_SCORE_THRESHOLD:   float = float(os.getenv("BREATHING_SCORE_THRESHOLD", "7.0"))  # 触发分数阈值
+
+    # SSE guide 事件：在 analysis 事件后额外推送引导语，前端可单独展示
+    ENABLE_SSE_EMOTION_GUIDE: bool = os.getenv("ENABLE_SSE_EMOTION_GUIDE", "false").lower() == "true"
+
+    # ════════════════════════════════════════════════════════════
+    # ✅ v2.6 新增：Prompt 增强功能开关（全部默认关闭）
+    # 均通过在 rag_context 末尾追加约束/引导文字实现，不修改 huawei_nlp.py
+    # 回滚方式：将对应开关设为 false 即刻生效
+    # ════════════════════════════════════════════════════════════
+
+    # RAG 防幻觉约束：有 RAG 上下文时追加"不得捏造"约束
+    ENABLE_RAG_GROUNDING: bool = os.getenv("ENABLE_RAG_GROUNDING", "false").lower() == "true"
+
+    # 脆弱信号主动引导：medium/high 风险时追加温和开放式问题引导
+    ENABLE_VULNERABILITY_PROBE: bool = os.getenv("ENABLE_VULNERABILITY_PROBE", "false").lower() == "true"
+
+    # 情绪镜像风格匹配：根据 risk_level 追加回复语气要求
+    ENABLE_EMOTION_MIRROR: bool = os.getenv("ENABLE_EMOTION_MIRROR", "false").lower() == "true"
+
+    # ════════════════════════════════════════════════════════════
+    # ✅ v2.6 新增：用户画像功能开关（默认关闭，需先 init_db 建表）
+    # ════════════════════════════════════════════════════════════
+
+    # 用户画像：登录用户可用，游客自动跳过，失败返回空画像
+    ENABLE_USER_PROFILE: bool = os.getenv("ENABLE_USER_PROFILE", "false").lower() == "true"
+
+    # 72小时危机随访任务（预留，功能待实现）
+    ENABLE_FOLLOWUP_TASK: bool = os.getenv("ENABLE_FOLLOWUP_TASK", "false").lower() == "true"
 
     # ── CORS ──────────────────────────────────────────────────
     @property
