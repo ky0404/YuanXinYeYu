@@ -160,6 +160,43 @@ class Settings(BaseSettings):
     # 72小时危机随访任务（预留，功能待实现）
     ENABLE_FOLLOWUP_TASK: bool = os.getenv("ENABLE_FOLLOWUP_TASK", "false").lower() == "true"
 
+    # 深度画像 Agent（低频异步）
+    ENABLE_DEEP_PROFILE: bool = os.getenv("ENABLE_DEEP_PROFILE", "false").lower() == "true"
+    DEEP_PROFILE_REFRESH_EVERY: int = int(os.getenv("DEEP_PROFILE_REFRESH_EVERY", "10"))
+
+
+    # ════════════════════════════════════════════════════════════════
+    # ✅ v2.7 新增：PersonalRAG / 情绪关联记忆（默认关闭）
+    # ════════════════════════════════════════════════════════════════
+
+    # PersonalRAG：读取用户近期情绪关键词，增强 RAG 检索相关性
+    # 开启条件：USE_LANGGRAPH=true + ENABLE_PERSONAL_RAG=true + 用户已登录
+    # 开启方式：ENABLE_PERSONAL_RAG=true
+    # 回滚方式：ENABLE_PERSONAL_RAG=false
+    ENABLE_PERSONAL_RAG: bool = os.getenv("ENABLE_PERSONAL_RAG", "false").lower() == "true"
+
+    # PersonalRAG 参数：读取最近 N 条情绪记录的关键词
+    PERSONAL_RAG_HISTORY_N: int = int(os.getenv("PERSONAL_RAG_HISTORY_N", "10"))
+
+    # 情绪关联记忆：将近期情绪趋势摘要注入 Prompt（需 ENABLE_USER_PROFILE=true 同时开启）
+    ENABLE_EMOTION_CONTEXT: bool = os.getenv("ENABLE_EMOTION_CONTEXT", "false").lower() == "true"
+    
+    # PersonalRAG 有效案例增强：结合 feedback like 召回更有效的历史回应
+    ENABLE_EFFECTIVE_CASE_MEMORY: bool = os.getenv("ENABLE_EFFECTIVE_CASE_MEMORY", "true").lower() == "true"
+
+    # PersonalRAG 仪式感模板增强：允许注入“第 N 次提到类似感受”等线索
+    ENABLE_RITUAL_MEMORY_TEMPLATE: bool = os.getenv("ENABLE_RITUAL_MEMORY_TEMPLATE", "true").lower() == "true"
+
+    # 长期记忆：每次按需取最近 N 条
+    LONG_TERM_MEMORY_RECENT_N: int = int(os.getenv("LONG_TERM_MEMORY_RECENT_N", "10"))
+
+    # 深度画像：低频异步刷新开关
+    ENABLE_DEEP_PROFILE: bool = os.getenv("ENABLE_DEEP_PROFILE", "false").lower() == "true"
+
+    # 深度画像：每累计多少条记录刷新一次
+    DEEP_PROFILE_REFRESH_EVERY: int = int(os.getenv("DEEP_PROFILE_REFRESH_EVERY", "10"))
+
+
     # ── CORS ──────────────────────────────────────────────────
     @property
     def CORS_ORIGINS(self) -> List[str]:
