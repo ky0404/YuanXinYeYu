@@ -1,18 +1,14 @@
-"""core/analysis.py
-情绪分析核心逻辑。
-
-v2.4 优化：
-  - _post_process 结果中同时暴露 category/score/label 别名字段
-    （与 LangGraph 内部字段保持一致，方便下游直接使用）
-  - 高危纠偏支持 urgent 级别强制覆盖
-  - 增加耗时日志
-  - 透传 _refs / _rag_route 扩展字段
+"""core/analysis.py v2.7
+在 v2.4 基础上新增：
+  - analyze() 增加可选 user_id 参数，透传给 run_agent()
+  - 兼容旧调用方式（不传 user_id = None）
 """
 from __future__ import annotations
 
 import logging
 import random
 import time
+from service.profile_service import load_profile
 from typing import Any, Dict, List, Optional
 
 from service.huawei_nlp import huawei_nlp_service
@@ -23,13 +19,10 @@ logger = logging.getLogger(__name__)
 class EmotionAnalyzer:
     """情绪分析器 — AI 回复优先，模板兜底。"""
 
-    # 高危关键词（触发强制负面纠偏）
     _HIGH_RISK_KW = (
         "自伤", "自杀", "轻生", "想死", "不想活",
         "活不下去", "结束生命", "割腕", "跳楼",
     )
-
-    # 极高危关键词（触发 urgent 纠偏 + 热线）
     _URGENT_KW = (
         "安眠药", "吃药轻生", "买了刀", "今晚就死",
         "不想活了就在今天", "跳下去", "已经割了",
@@ -68,9 +61,10 @@ class EmotionAnalyzer:
 
     async def analyze(
         self,
-        text: str,
-        mode: str = "smart",
+        text:    str,
+        mode:    str = "smart",
         history: Optional[List[Dict]] = None,
+        user_id: Optional[int] = None,   # ✅ v2.7 新增可选参数
     ) -> Dict[str, Any]:
         if not text or not text.strip():
             raise ValueError("输入文本不能为空")
@@ -83,67 +77,48 @@ class EmotionAnalyzer:
         if settings.USE_LANGGRAPH:
             try:
                 from agent.graph import run_agent  # noqa: PLC0415
-                sentiment_result = await run_agent(text, mode, history)
+                # ✅ v2.7：透传 user_id（向下兼容，run_agent 默认值为 None）
+                sentiment_result = await run_agent(text, mode, history, user_id=user_id)
                 elapsed = int((time.monotonic() - t0) * 1000)
-                logger.info(
-                    "[Analysis] LangGraph 链路成功 | mode=%s latency=%dms",
-                    mode, elapsed,
-                )
-                return self._post_process(text, mode, sentiment_result)
+                logger.info("[Analysis] LangGraph 链路成功 | mode=%s latency=%dms user_id=%s",
+                            mode, elapsed, user_id)
+                return self._post_process(text, mode, sentiment_result, user_id=user_id)
             except Exception as exc:
                 elapsed = int((time.monotonic() - t0) * 1000)
-                logger.warning(
-                    "[Analysis] LangGraph 失败(%dms)，回退旧链路: %s",
-                    elapsed, exc,
-                    exc_info=False,
-                )
+                logger.warning("[Analysis] LangGraph 失败(%dms)，回退旧链路: %s",
+                               elapsed, exc, exc_info=False)
 
         sentiment_result = await huawei_nlp_service.analyze_sentiment(
             text=text, mode=mode, history=history
         )
         elapsed = int((time.monotonic() - t0) * 1000)
         logger.info("[Analysis] 旧链路成功 | mode=%s latency=%dms", mode, elapsed)
-        return self._post_process(text, mode, sentiment_result)
+        return self._post_process(text, mode, sentiment_result, user_id=user_id)
 
     def _post_process(
         self,
-        text: str,
-        mode: str,
+        text:             str,
+        mode:             str,
         sentiment_result: Dict[str, Any],
+        user_id: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """
-        后处理：
-        1. 高危关键词纠偏（强制负面 / urgent）
-        2. 构建统一返回字段
-        3. 同时暴露 category/score/label 别名（兼容内部旧字段）
-        4. 透传扩展字段（_refs / _rag_route）
-        """
-        # ── 极高危纠偏（只纠偏情绪，不强改 risk_level，避免与主风险链路冲突）────
         if any(k in text for k in self._URGENT_KW):
             sentiment_result["category"] = 2
             sentiment_result["label"]    = "负面"
             sentiment_result["score"]    = max(float(sentiment_result.get("score", 9.0)), 9.0)
-
-        # ── 普通高危纠偏 ───────────────────────────────────────────────────
         elif any(k in text for k in self._HIGH_RISK_KW):
             sentiment_result["category"] = 2
             sentiment_result["label"]    = "负面"
             sentiment_result["score"]    = max(float(sentiment_result.get("score", 8.0)), 8.0)
 
-
         category = sentiment_result.get("category", 4)
         score    = float(sentiment_result.get("score", 5.0))
         label    = sentiment_result.get("label", "中性")
-
-        ai_reply = sentiment_result.get("reply", "")
-        if not ai_reply:
-            ai_reply = self._mode_fallback_reply(mode, category)
-
-        keywords   = sentiment_result.get("keywords", [])
+        ai_reply = sentiment_result.get("reply", "") or self._mode_fallback_reply(mode, category)
+        keywords = sentiment_result.get("keywords", [])
         guide_text = self._generate_guide(category=category, score=score)
 
         result: Dict[str, Any] = {
-            # ── 主字段（前端/评测使用）──────────────────────────────────
             "sentiment_category": category,
             "sentiment_score":    score,
             "sentiment_label":    label,
@@ -151,18 +126,30 @@ class EmotionAnalyzer:
             "guide":              guide_text,
             "keywords":           keywords,
             "mode":               mode,
-
-            # ✅ 别名字段（供内部旧链路/LangGraph 使用；正式对外仍以 sentiment_* 为准）──────────────────
-            "category": category,
-            "score":    score,
-            "label":    label,
+            "category":           category,
+            "score":              score,
+            "label":              label,
         }
 
-        # ✅ 透传扩展字段（不影响主流程）
         for ext_key in ("_refs", "_rag_route"):
             if ext_key in sentiment_result:
                 result[ext_key] = sentiment_result[ext_key]
 
+        logger.info("分析完成 | label=%s score=%.1f keywords=%s mode=%s",
+                    label, score, keywords, mode)
+        try:
+            from config.settings import settings  # noqa: PLC0415
+            if settings.ENABLE_USER_PROFILE and user_id:
+                profile = load_profile(user_id)
+                if profile and (
+                    profile.get("stressors")
+                    or profile.get("recent_state")
+                    or profile.get("interests")
+                    or profile.get("response_hints")
+                ):
+                    result["_profile"] = profile
+        except Exception as exc:
+            logger.debug("[Analysis] 读取画像失败（已忽略）| user_id=%s err=%s", user_id, exc)
         logger.info(
             "分析完成 | label=%s score=%.1f keywords=%s mode=%s",
             label, score, keywords, mode,
@@ -183,21 +170,15 @@ class EmotionAnalyzer:
 
     def _mode_fallback_reply(self, mode: str, category: int) -> str:
         fallbacks = {
-            "smart": {
-                1: "你的好心情透过文字都感染到我了！这份积极很珍贵，继续保持～",
-                2: "我感受到了你话语里的沉重，这种感受是真实的，不用急着让自己好起来。",
-                4: "嗯，我在听。有什么想多说的吗？",
-            },
-            "praise": {
-                1: "哇！你今天状态超棒的，这份快乐是你应得的！💖",
-                2: "你愿意说出心里的感受，这本身就很了不起！感知自己的情绪是一种很珍贵的能力 💪",
-                4: "光是认真生活这件事，就值得被夸！你每天都在好好存在着，很棒✨",
-            },
-            "comfort": {
-                1: "你开心我也开心，就是这样～",
-                2: "我听到了，你现在不太好受...没关系，我就陪着你。",
-                4: "嗯，我在这里，你慢慢说...",
-            },
+            "smart":   {1: "你的好心情透过文字都感染到我了！这份积极很珍贵，继续保持～",
+                        2: "我感受到了你话语里的沉重，这种感受是真实的，不用急着让自己好起来。",
+                        4: "嗯，我在听。有什么想多说的吗？"},
+            "praise":  {1: "哇！你今天状态超棒的，这份快乐是你应得的！💖",
+                        2: "你愿意说出心里的感受，这本身就很了不起！感知自己的情绪是一种很珍贵的能力 💪",
+                        4: "光是认真生活这件事，就值得被夸！你每天都在好好存在着，很棒✨"},
+            "comfort": {1: "你开心我也开心，就是这样～",
+                        2: "我听到了，你现在不太好受...没关系，我就陪着你。",
+                        4: "嗯，我在这里，你慢慢说..."},
         }
         mode_fallback = fallbacks.get(mode, fallbacks["smart"])
         return mode_fallback.get(category, mode_fallback.get(4, "我在这里听你说～"))
