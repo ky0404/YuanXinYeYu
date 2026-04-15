@@ -20,9 +20,11 @@ from sqlalchemy.exc import IntegrityError
 from config.settings import settings
 from core.analysis import emotion_analyzer
 from models.database import SessionLocal
+from models.emotion_record import EmotionRecord
 from models.guest_quota import GuestQuota
 from models.user import User as UserModel
 from utils.auth import get_optional_user
+from service.profile_service import update_profile_from_result, run_deep_profile_refresh
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -105,40 +107,42 @@ def _sse_json(data: dict) -> str:
 
 
 # ── SSE 生成器（含可选增强事件）──────────────────────────────────────────────
-
 async def _token_generator(
-    request:   StreamRequest,
+    request: StreamRequest,
     client_ip: str,
-    is_guest:  bool,
+    is_guest: bool,
+    current_user: Optional[UserModel] = None,
 ) -> AsyncGenerator[str, None]:
     """
     核心 SSE 生成器。
     事件顺序：
-      [thinking]?  →  analyze()  →  token*  →  analysis  →  [guide]?  →  done
-    其中 [?] 事件受 feature flag 控制，旧前端忽略未知 type 字段即可正常工作。
+      [thinking]? → analyze() → token* → analysis → [guide]? → done
     """
     # ── 1. 游客额度检查 ──────────────────────────────────────────────────
     if is_guest:
         _, exceeded = _check_quota(client_ip)
         if exceeded:
             logger.info("[stream] 游客 %s 额度已满", client_ip)
-            yield _sse_json({"type": "error", "code": 401, "msg": "今日试用额度已达上限，请登录后继续使用"})
+            yield _sse_json({
+                "type": "error",
+                "code": 401,
+                "msg": "今日试用额度已达上限，请登录后继续使用",
+            })
             yield 'data: {"type":"done"}\n\n'
             return
 
-    # ── 2. ✅ v3.2 新增：thinking 事件（ENABLE_SSE_THINKING）────────────
-    # 在分析开始前立即发送，让用户看到系统正在工作，改善 5-10s 等待体验
-    # 旧前端不处理 type="thinking" 时会安全忽略此事件
+    # ── 2. thinking 事件 ────────────────────────────────────────────────
     if settings.ENABLE_SSE_THINKING:
         yield _sse_json({
             "type": "thinking",
-            "msg":  "正在感受你分享的内容，稍等片刻...",
+            "msg": "正在感受你分享的内容，稍等片刻...",
         })
 
     # ── 3. 调用分析链路 ──────────────────────────────────────────────────
     try:
         valid_modes = {"smart", "praise", "comfort"}
         mode = request.mode if request.mode in valid_modes else "smart"
+
         history = [
             {"role": item["role"], "content": item["content"]}
             for item in (request.history or [])[-6:]
@@ -149,18 +153,114 @@ async def _token_generator(
             text=request.text,
             mode=mode,
             history=history,
+            user_id=current_user.id if current_user else None,
         )
 
         # ── 4. 成功后消耗额度 ────────────────────────────────────────────
         if is_guest:
             _consume_quota_standalone(client_ip)
 
+        # ── 4.5 写入情绪记录（供 PersonalRAG / 用户画像使用）────────────
+        try:
+            db = SessionLocal()
+            try:
+                score_val = float(result.get("sentiment_score") or 5.0)
+                kw_list = result.get("keywords", []) or []
+
+                importance = 0.5
+                if score_val >= 8.5:
+                    importance = 0.95
+                elif score_val >= 7.0:
+                    importance = 0.8
+                elif kw_list:
+                    importance = 0.65
+
+                memory_topic = (
+                    " / ".join([str(x) for x in kw_list[:3]])
+                    if kw_list else str(result.get("sentiment_label") or "普通对话")
+                )
+
+                record = EmotionRecord(
+                    user_id=current_user.id if current_user else None,
+                    emotion_category=int(result.get("sentiment_category") or 4),
+                    emotion_label=str(result.get("sentiment_label") or "中性")[:50],
+                    emotion_score=score_val,
+                    emotion_type=(
+                        str(result.get("emotion_type"))[:20]
+                        if result.get("emotion_type")
+                        else None
+                    ),
+                    keywords=json.dumps(kw_list, ensure_ascii=False),
+                    reply_mode=mode,
+                    is_crisis=1 if score_val >= 8.5 else 0,
+                    memory_importance=importance,
+                    memory_topic=memory_topic[:100],
+                )
+                db.add(record)
+                db.commit()
+
+                logger.info(
+                    "[stream] 情绪记录已写入 | user_id=%s record_id=%s",
+                    current_user.id if current_user else None,
+                    record.id,
+                )
+
+                user_record_count = None
+                if current_user:
+                    user_record_count = (
+                        db.query(EmotionRecord)
+                        .filter(EmotionRecord.user_id == current_user.id)
+                        .count()
+                    )
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("[stream] 情绪记录写入失败（已忽略）: %s", exc)
+            user_record_count = None
+
+        # ── 4.6 异步更新用户画像──────────────────────────────
+        try:
+            if current_user and settings.ENABLE_USER_PROFILE:
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        update_profile_from_result,
+                        current_user.id,
+                        result,
+                        request.text,
+                    )
+                )
+
+                # ✅ 深度画像：低频异步刷新，不阻塞主流程
+                if settings.ENABLE_DEEP_PROFILE:
+                    user_record_count = None
+                    db2 = SessionLocal()
+                    try:
+                        user_record_count = (
+                            db2.query(EmotionRecord)
+                            .filter(EmotionRecord.user_id == current_user.id)
+                            .count()
+                        )
+                    finally:
+                        db2.close()
+
+                    if (
+                        user_record_count
+                        and user_record_count > 0
+                        and user_record_count % settings.DEEP_PROFILE_REFRESH_EVERY == 0
+                    ):
+                        asyncio.create_task(
+                            asyncio.to_thread(
+                                run_deep_profile_refresh,
+                                current_user.id,
+                            )
+                        )
+        except Exception as exc:
+            logger.warning("[stream] 画像更新任务创建失败（已忽略）: %s", exc)
+
         reply: str = result.get("reply", "") or "我在这里，慢慢说。"
         reply = reply.lstrip("✨💖☕ \u3000")
 
-        # ── 5. ✅ v3.2 呼吸节奏判断（ENABLE_BREATHING_PAUSE）────────────
-        # 高痛苦状态（category=2 且 score 超过阈值）时放慢打字节奏，更有陪伴感
-        # 关闭时（默认）使用 settings.STREAM_TOKEN_DELAY_MS（★ 修复硬编码）
+        # ── 5. 呼吸节奏判断 ─────────────────────────────────────────────
         base_delay_s = settings.STREAM_TOKEN_DELAY_MS / 1000.0
 
         use_breathing = (
@@ -181,12 +281,12 @@ async def _token_generator(
                 token_delay_s * 1000,
             )
 
-        # ── 6. 逐字推送（★ 修复：delay 从硬编码 0.028 改为读 settings）──
+        # ── 6. 逐字推送 ──────────────────────────────────────────────────
         for char in reply:
             yield _sse_json({"type": "token", "content": char})
             await asyncio.sleep(token_delay_s)
 
-        # ── 7. 推送完整分析数据（不变）──────────────────────────────────
+        # ── 7. analysis 事件 ────────────────────────────────────────────
         yield _sse_json({
             "type": "analysis",
             "data": {
@@ -196,12 +296,13 @@ async def _token_generator(
                 "guide":              result.get("guide"),
                 "keywords":           result.get("keywords", []),
                 "mode":               mode,
+                "_rag_route":         result.get("_rag_route"),
+                "_refs":              result.get("_refs", []),
+                "_profile":           result.get("_profile", {}),
             },
         })
 
-        # ── 8. ✅ v3.2 新增：guide 事件（ENABLE_SSE_EMOTION_GUIDE）───────
-        # 将 guide 引导语单独作为事件发出，前端可根据场景决定如何展示
-        # 不处理此事件的旧前端不受影响
+        # ── 8. guide 事件 ───────────────────────────────────────────────
         if settings.ENABLE_SSE_EMOTION_GUIDE:
             guide_text = result.get("guide", "")
             if guide_text:
@@ -211,7 +312,7 @@ async def _token_generator(
                     "score": result.get("sentiment_score", 5.0),
                 })
 
-        # ── 9. done ──────────────────────────────────────────────────────
+        # ── 9. done ─────────────────────────────────────────────────────
         yield 'data: {"type":"done"}\n\n'
 
     except ValueError as exc:
@@ -245,7 +346,12 @@ async def analyze_emotion_stream(
     )
 
     return StreamingResponse(
-        _token_generator(request, client_ip=client_ip, is_guest=is_guest),
+        _token_generator(
+            request,
+            client_ip=client_ip,
+            is_guest=is_guest,
+            current_user=current_user,
+        ),   
         media_type="text/event-stream",
         headers=_SSE_HEADERS,
     )
