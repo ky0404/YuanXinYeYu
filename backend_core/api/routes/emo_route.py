@@ -1,11 +1,12 @@
-"""api/routes/emo_route.py v3.2
-优化（v3.2）：
-  1. 增加接口响应耗时日志（受 ENABLE_RESPONSE_TIME_LOG 控制）
-  2. quota 消耗更健壮，IntegrityError 下仍能继续主流程
-  3. 情绪记录写入增加字段防御（防止 None 写入数据库）
-  4. 统一 mode 校验逻辑提取为常量
-  5. 日志补充 user_id / ip 信息，便于排查
+"""api/routes/emo_route.py v3.3
+v3.3 新增（完全兼容 v3.2）：
+  1. emotion_analyzer.analyze() 透传 user_id（供 LangGraph 链路加载用户画像）
+  2. 分析成功后异步触发 update_profile_from_result（ENABLE_USER_PROFILE=true 时）
+  3. 分析成功后异步触发 schedule_followup（ENABLE_FOLLOWUP_TASK=true 时）
+  4. 从 result 中提取 _risk_level，降级时用 score 推断
+  所有新增逻辑均为 fire-and-forget，失败不影响主流程返回
 """
+import asyncio
 import json
 import logging
 import time
@@ -26,11 +27,11 @@ from models.user import User as UserModel
 from service.cache_service import semantic_cache
 from utils.auth import get_optional_user
 from utils.response import error_response, success_response
+from service.profile_service import update_profile_from_result
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# ── 常量 ─────────────────────────────────────────────────────────────────────
 _VALID_MODES = frozenset({"smart", "praise", "comfort"})
 
 
@@ -77,7 +78,6 @@ def _get_or_create_quota(db: Session, client_ip: str) -> GuestQuota:
 
 
 def _consume_quota(db: Session, quota: Optional[GuestQuota]) -> None:
-    """消耗一次游客额度，失败时仅记录日志，不影响主流程。"""
     if quota is None:
         return
     try:
@@ -93,10 +93,55 @@ def _consume_quota(db: Session, quota: Optional[GuestQuota]) -> None:
 
 
 def _safe_str(val, max_len: int = 50) -> str:
-    """将值安全转换为字符串，防止 None 写数据库。"""
     if val is None:
         return ""
     return str(val)[:max_len]
+
+
+def _infer_risk_level(result: dict) -> str:
+    """
+    从 result 中提取风险等级。
+    优先读 _risk_level（LangGraph 链路注入），
+    降级时根据 sentiment_score 推断（旧链路兼容）。
+    """
+    explicit = result.get("_risk_level", "")
+    if explicit in ("low", "medium", "high", "urgent"):
+        return explicit
+    score = float(result.get("sentiment_score") or 5.0)
+    category = int(result.get("sentiment_category") or 4)
+    if category == 2:
+        if score >= 8.5:
+            return "urgent"
+        if score >= 7.0:
+            return "high"
+        if score >= 5.0:
+            return "medium"
+    return "low"
+
+
+# ── ✅ v3.3 fire-and-forget 异步任务 ─────────────────────────────────────────
+
+def _trigger_profile_update(user_id: int, result: dict, text: str) -> None:
+    """后台更新用户画像（非阻塞，仅在 ENABLE_USER_PROFILE=true 时执行）。"""
+    try:
+        if not settings.ENABLE_USER_PROFILE or not user_id:
+            return
+        from service.profile_service import update_profile_from_result  # noqa: PLC0415
+        update_profile_from_result(user_id, result, text)
+    except Exception as exc:
+        logger.warning("[emo_route] 画像更新失败（已忽略）| user_id=%s err=%s", user_id, exc)
+
+
+def _trigger_followup(user_id: Optional[int], risk_level: str,
+                      result: dict, text: str) -> None:
+    """后台创建随访任务（非阻塞，仅在 ENABLE_FOLLOWUP_TASK=true 时执行）。"""
+    try:
+        if not settings.ENABLE_FOLLOWUP_TASK or not user_id:
+            return
+        from service.followup_service import schedule_followup  # noqa: PLC0415
+        schedule_followup(user_id, risk_level, result, text)
+    except Exception as exc:
+        logger.warning("[emo_route] 随访任务失败（已忽略）| user_id=%s err=%s", user_id, exc)
 
 
 # ── 主路由 ────────────────────────────────────────────────────────────────────
@@ -109,10 +154,6 @@ async def analyze_emotion(
     db:           Session              = Depends(get_db),
     current_user: Optional[UserModel]  = Depends(get_optional_user),
 ):
-    """
-    主情绪分析接口。
-    处理流程：额度前置 → 缓存 → emotion_analyzer → 写缓存 → 写记录
-    """
     t0        = time.monotonic()
     client_ip = _get_client_ip(request)
     mode      = payload.mode if payload.mode in _VALID_MODES else "smart"
@@ -123,10 +164,8 @@ async def analyze_emotion(
     if current_user is None:
         quota = _get_or_create_quota(db, client_ip)
         if quota and quota.count >= settings.GUEST_DAILY_LIMIT:
-            logger.info(
-                "[emo_route] 游客额度满 | ip=%s count=%d/%d",
-                client_ip, quota.count, settings.GUEST_DAILY_LIMIT,
-            )
+            logger.info("[emo_route] 游客额度满 | ip=%s count=%d/%d",
+                        client_ip, quota.count, settings.GUEST_DAILY_LIMIT)
             return error_response(code=401, msg="今日试用额度已达上限，请登录后继续使用")
 
     # ── 2. 语义缓存查询 ───────────────────────────────────────────────────
@@ -137,27 +176,24 @@ async def analyze_emotion(
             _consume_quota(db, quota)
             elapsed = int((time.monotonic() - t0) * 1000)
             if settings.ENABLE_RESPONSE_TIME_LOG:
-                logger.info(
-                    "[emo_route] 缓存命中 | mode=%s ip=%s user_id=%s latency=%dms",
-                    mode, client_ip, user_id, elapsed,
-                )
+                logger.info("[emo_route] 缓存命中 | mode=%s ip=%s user_id=%s latency=%dms",
+                            mode, client_ip, user_id, elapsed)
             return success_response(data={**cached, "_cached": True})
 
-    # ── 3. 调用分析链路 ───────────────────────────────────────────────────
+    # ── 3. 调用分析链路（✅ v3.3: 透传 user_id）────────────────────────────
     history = [h.dict() for h in (payload.history or [])[-6:]]
     try:
         result = await emotion_analyzer.analyze(
             text=payload.text,
             mode=mode,
             history=history,
+            user_id=user_id,    # ✅ v3.3 新增，旧链路默认 None 兼容
         )
 
-        # ✅ 防御：确保 result 至少是 dict，避免后续 get/写库报错
         if not isinstance(result, dict):
-            logger.error("[emo_route] analyze 返回非 dict，已降级为空结果 | user_id=%s", user_id)
+            logger.error("[emo_route] analyze 返回非 dict | user_id=%s", user_id)
             result = {}
 
-        # ✅ 防御：补默认字段，避免下游写库/响应时报 KeyError 或类型异常
         result.setdefault("sentiment_category", 4)
         result.setdefault("sentiment_label", "中性")
         result.setdefault("sentiment_score", 5.0)
@@ -165,17 +201,26 @@ async def analyze_emotion(
         result.setdefault("mode", mode)
 
         elapsed_analyze = int((time.monotonic() - t0) * 1000)
-        logger.info(
-            "[emo_route] 分析成功 | mode=%s label=%s user_id=%s latency=%dms",
-            mode, result.get("sentiment_label"), user_id, elapsed_analyze,
-        )
+        logger.info("[emo_route] 分析成功 | mode=%s label=%s user_id=%s latency=%dms",
+                    mode, result.get("sentiment_label"), user_id, elapsed_analyze)
+                # ✅ v2.8：异步更新用户画像（默认关闭，失败不影响主流程）
+        try:
+            if current_user and settings.ENABLE_USER_PROFILE:
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        update_profile_from_result,
+                        current_user.id,
+                        result,
+                        payload.text,
+                    )
+                )
+        except Exception as exc:
+            logger.warning("[emo_route] 画像更新任务创建失败（已忽略）: %s", exc)
+
     except Exception as exc:
         elapsed = int((time.monotonic() - t0) * 1000)
-        logger.error(
-            "[emo_route] 分析失败 | mode=%s user_id=%s latency=%dms err=%s",
-            mode, user_id, elapsed, exc,
-            exc_info=True,
-        )
+        logger.error("[emo_route] 分析失败 | mode=%s user_id=%s latency=%dms err=%s",
+                     mode, user_id, elapsed, exc, exc_info=True)
         return error_response(code=500, msg="情绪分析暂时不可用，请稍后重试")
 
     # ── 4. 写入缓存 ───────────────────────────────────────────────────────
@@ -193,9 +238,7 @@ async def analyze_emotion(
             emotion_label    = _safe_str(result.get("sentiment_label") or "中性", 50),
             emotion_score    = float(result.get("sentiment_score") or 5.0),
             reply_mode       = mode,
-            keywords         = json.dumps(
-                result.get("keywords", []), ensure_ascii=False
-            ),
+            keywords         = json.dumps(result.get("keywords", []), ensure_ascii=False),
         )
         db.add(record)
         db.commit()
@@ -206,13 +249,27 @@ async def analyze_emotion(
         except Exception:
             pass
 
-    # ── 6. 返回（可选附加 RAG 引用）──────────────────────────────────────
+    # ── 6. ✅ v3.3 后台任务：画像更新 + 危机随访（fire-and-forget）───────
+    if user_id:
+        risk_level = _infer_risk_level(result)
+
+        # 用户画像更新（ENABLE_USER_PROFILE=true 时生效）
+        if settings.ENABLE_USER_PROFILE:
+            asyncio.create_task(
+                asyncio.to_thread(_trigger_profile_update, user_id, result, payload.text)
+            )
+
+        # 72h 危机随访（ENABLE_FOLLOWUP_TASK=true 且 high/urgent 时生效）
+        if settings.ENABLE_FOLLOWUP_TASK and risk_level in ("high", "urgent"):
+            asyncio.create_task(
+                asyncio.to_thread(_trigger_followup, user_id, risk_level, result, payload.text)
+            )
+
+    # ── 7. 返回 ──────────────────────────────────────────────────────────
     elapsed_total = int((time.monotonic() - t0) * 1000)
     if settings.ENABLE_RESPONSE_TIME_LOG:
-        logger.info(
-            "[emo_route] 请求完成 | mode=%s user_id=%s total_latency=%dms",
-            mode, user_id, elapsed_total,
-        )
+        logger.info("[emo_route] 请求完成 | mode=%s user_id=%s total_latency=%dms",
+                    mode, user_id, elapsed_total)
 
     if settings.ENABLE_RAG_REFS and "_refs" in result:
         return success_response(data={**result, "_refs": result["_refs"]})
@@ -220,7 +277,7 @@ async def analyze_emotion(
     return success_response(data=result)
 
 
-# ── 健康 / 缓存维护 ───────────────────────────────────────────────────────────
+# ── 健康 / 缓存 ───────────────────────────────────────────────────────────────
 
 @router.get("/cache/stats", summary="缓存统计")
 async def cache_stats():
@@ -235,10 +292,8 @@ async def cache_clear():
 
 @router.get("/health", summary="健康检查")
 async def health_check():
-    return success_response(
-        data={
-            "status":  "healthy",
-            "version": settings.APP_VERSION,
-            "cache":   semantic_cache.stats(),
-        }
-    )
+    return success_response(data={
+        "status":  "healthy",
+        "version": settings.APP_VERSION,
+        "cache":   semantic_cache.stats(),
+    })
