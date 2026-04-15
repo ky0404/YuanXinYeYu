@@ -416,31 +416,6 @@ https://cloud.langfuse.com/
 # 或本地查看trace文件
 cat eval/output/trace_*.json | python -m json.tool | head -100
 ```
-## ⚙️ 新增配置项示例 (.env)
-
-# --- 用户画像 / 深度画像 ---
-ENABLE_USER_PROFILE=true
-ENABLE_DEEP_PROFILE=true
-DEEP_PROFILE_REFRESH_EVERY=10
-
-# --- PersonalRAG ---
-ENABLE_PERSONAL_RAG=true
-PERSONAL_RAG_HISTORY_N=10
-
-# --- 危机随访 ---
-ENABLE_FOLLOWUP_TASK=true
-
-# --- SSE 增强 ---
-ENABLE_SSE_THINKING=true
-ENABLE_BREATHING_PAUSE=true
-ENABLE_SSE_EMOTION_GUIDE=true
-BREATHING_SCORE_THRESHOLD=7.0
-
-# --- Prompt 增强 ---
-ENABLE_RAG_GROUNDING=true
-ENABLE_VULNERABILITY_PROBE=true
-ENABLE_EMOTION_MIRROR=true
----
 
 ## 📡 主要 API 接口
 
