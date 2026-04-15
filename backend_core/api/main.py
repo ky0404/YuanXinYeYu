@@ -20,6 +20,7 @@ from api.routes.history_route import router as history_router
 from api.routes.stream_route import router as stream_router
 from api.routes.feedback_route import router as feedback_router
 from api.routes.ws_route import router as ws_router
+from api.routes.profile_route import router as profile_router 
 from utils.response import error_response
 from config.settings import settings
 
@@ -212,7 +213,8 @@ def create_app() -> FastAPI:
     app.include_router(auth_router, prefix="/api", tags=["用户认证"])
     app.include_router(history_router, prefix="/api", tags=["对话历史"])
     app.include_router(ws_router, prefix="/api", tags=["WebSocket"])
-
+    app.include_router(profile_router, prefix="/api", tags=["用户画像"])
+    
     @app.get("/", tags=["健康检查"])
     async def root():
         return {"status": "online", "version": settings.APP_VERSION}
