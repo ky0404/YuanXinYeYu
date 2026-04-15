@@ -97,6 +97,24 @@ Trace Breakdown:
 
 
 ---
+## ✨ v3.x 新增与优化概览
+- **🧘 用户心理画像 （UserProfile）**：启用 `ENABLE_USER_PROFILE=true` 后自动建立画像数据库表 `user_profiles`，实时积累关键词、情绪均值、危机计数，并异步生成**深度画像 (DeepProfile)**。
+- **🧠 Personal RAG** ：开启 `ENABLE_PERSONAL_RAG=true` 后，系统会在 RAG 检索时融合用户历史情绪关键字、兴趣与高重要度记忆，实现轻量长期记忆。
+- **💌 72 小时危机随访** ：高危/紧急 (`high` / `urgent`) 对话时自动创建 follow‑up 任务，可选发出关怀邮件。开关 `ENABLE_FOLLOWUP_TASK`。
+- **🌬 SSE 增强体验** ：  
+  - `ENABLE_SSE_THINKING` → 分析前推送 thinking 事件；  
+  - `ENABLE_BREATHING_PAUSE` → 高痛苦情绪时放慢 token 输出；  
+  - `ENABLE_SSE_EMOTION_GUIDE` → 末尾追加 guide 引导语事件。
+- **🧩 Prompt 增强模块** （默认关闭）：  
+  - `ENABLE_RAG_GROUNDING` 防幻觉；  
+  - `ENABLE_VULNERABILITY_PROBE` 脆弱信号温和引导；  
+  - `ENABLE_EMOTION_MIRROR` 语气镜像化。
+- **⚙️ 配置项新增**（均可 .env 控制）：
+  - `ENABLE_DEEP_PROFILE` ：启用深度画像 Agent；
+  - `DEEP_PROFILE_REFRESH_EVERY` ：每累计 N 条情绪记录刷新画像；
+  - `PERSONAL_RAG_HISTORY_N` ：PersonalRAG 读取历史记录数量；
+  - `ENABLE_RITUAL_MEMORY_TEMPLATE` ：注入“第 N 次提到类似感受”等提示文本。
+---
 
 ## 🛠 技术栈
 
@@ -398,7 +416,30 @@ https://cloud.langfuse.com/
 # 或本地查看trace文件
 cat eval/output/trace_*.json | python -m json.tool | head -100
 ```
+## ⚙️ 新增配置项示例 (.env)
 
+# --- 用户画像 / 深度画像 ---
+ENABLE_USER_PROFILE=true
+ENABLE_DEEP_PROFILE=true
+DEEP_PROFILE_REFRESH_EVERY=10
+
+# --- PersonalRAG ---
+ENABLE_PERSONAL_RAG=true
+PERSONAL_RAG_HISTORY_N=10
+
+# --- 危机随访 ---
+ENABLE_FOLLOWUP_TASK=true
+
+# --- SSE 增强 ---
+ENABLE_SSE_THINKING=true
+ENABLE_BREATHING_PAUSE=true
+ENABLE_SSE_EMOTION_GUIDE=true
+BREATHING_SCORE_THRESHOLD=7.0
+
+# --- Prompt 增强 ---
+ENABLE_RAG_GROUNDING=true
+ENABLE_VULNERABILITY_PROBE=true
+ENABLE_EMOTION_MIRROR=true
 ---
 
 ## 📡 主要 API 接口
@@ -425,6 +466,13 @@ cat eval/output/trace_*.json | python -m json.tool | head -100
 | `/metrics` | GET | Prometheus 监控指标 | ✅ Prometheus暴露 |
 | `/api/profile` | GET | 获取当前用户心理画像（ENABLE_USER_PROFILE=true 时生效） | ✅ v2.6新增 |
 | `/api/profile/update` | POST | 更新画像（由系统自动调用，用户手动调用时报错） | ✅ v2.6新增 |
+| `/api/profile` | GET | **获取当前用户心理画像** (`ENABLE_USER_PROFILE=true` 时可用) | ✅ v2.7 新增 |
+| `/api/profile/reset` | DELETE | **重置心理画像 (隐私保护)** | ✅ v2.7 新增 |
+| `/api/emo_analysis_stream` | POST | **SSE 流式分析** (新增 thinking / guide 事件、呼吸节奏 UX) | ✅ v3.2 |
+| `/api/followup/run` | POST | **触发危机随访扫描任务** (仅管理员或脚本使用) | ✅ v2.7 新增 |
+| `/api/cache/stats` | GET | 查看语义缓存统计信息 | ✅ |
+| `/api/cache/clear` | DELETE | 清空缓存 (管理用途) | ✅ |
+
 
 ---
 
@@ -439,19 +487,19 @@ ky0404-yuanxinyeyu/
 │   ├── requirements.txt
 │
 │   ├── agent/                                   # AI 状态机逻辑
-│   │   ├── graph.py                             # ✅ v2.6 Prompt增强 + Bug修复版 状态机
+│   │   ├── graph.py                             # ✅ v2.7 支持 PersonalRAG 与深度画像注入
 │   │   └── langfuse_client.py                   # Langfuse 链路追踪客户端
 │
 │   ├── api/
 │   │   ├── main.py
 │   │   └── routes/
 │   │       ├── stream_route.py                  # ✅ v3.2: SSE thinking/breathing/guide事件
-│   │       ├── emo_route.py                     # 情绪分析接口
+│   │       ├── emo_route.py                     # 情绪分析接口， v3.3 透传 user_id + 异步画像更新 + 危机随访
 │   │       ├── auth_route.py                    # 用户认证(密码+邮箱+GitHub)
 │   │       ├── history_route.py                 # 历史记录 + 情绪趋势分析
 │   │       ├── feedback_route.py                # RLHF反馈接口
-│   │       └── ws_route.py                      # WebSocket 控制通道
-│
+│   │       ├── profile_route.py                 # ✅ v2.7 用户心理画像接口(GET/DELETE)
+│            └── ws_route.py                     # WebSocket 控制通道
 │   ├── config/
 │   │   ├── settings.py                          # ✅ v2.6: 新配置项（SSE/Prompt/Profile）
 │   │   └── logging_config.py                    # 结构化日志
@@ -477,7 +525,8 @@ ky0404-yuanxinyeyu/
 │   │   ├── emotion_record.py                    # 情绪记录表
 │   │   ├── guest_quota.py                       # 游客额度表
 │   │   ├── email_verification_code.py           # 邮箱验证码记录表
-│   │   └── user_profile.py                      # ✅ v2.6 用户画像模型(可选)
+│   │   ├── followup_service.py                  # ✅ v2.7 72 小时危机随访任务
+│   │   └── user_profile.py                      # v3.0 画像模型(含 deep_profile JSON)
 │
 │   ├── knowledge/
 │   │   └── emotion_knowledge.py                 # 心理学知识库
