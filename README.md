@@ -988,14 +988,13 @@ Langfuse链路追踪：
 
 ---
 ## 📊 生产环境数据总结
-
 ### 实时运行状态
 服务启动时间：2026-04-16 14:25:02 CST
 运行时长：7×24小时稳定运行
 进程PID：104060
 内存占用：63.3MB（2GB可用内存中的3.2%）
 CPU使用率：平均4.647s累计（1核中的0.23核）
-
+```
 网络指标：
 ├─ 总请求数：1840条
 ├─ 成功率：100%
@@ -1037,7 +1036,7 @@ Langfuse追踪：
 ---
 
 ## 🙏 致谢
-
+```
 感谢以下开源项目和服务：
 - [FastAPI](https://github.com/tiangolo/fastapi) - Web框架
 - [LangChain](https://github.com/langchain-ai/langchain) - AI应用框架
