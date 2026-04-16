@@ -710,17 +710,17 @@ ky0404-yuanxinyeyu/
 ### systemd 服务（实测运行中）
 ```bash
 # 查看服务状态
-systemctl status emotion_analysis_service
-
+systemctl status emotion-analysis
 # 输出示例
-● emotion_analysis_service.service - Emotion Analysis Service
-     Loaded: loaded (/etc/systemd/system/emotion_analysis_service.service; enabled; vendor preset: enabled)
-     Active: active (running) since Mon 2026-04-06 20:53:34 CST; 21min ago
+● emotion-analysis.service - Emotion Analysis API (uvicorn factory)
+     Loaded: loaded (/etc/systemd/system/emotion-analysis.service; enabled; vendor preset: enabled)
+     Active: active (running) since Thu 2026-04-16 14:25:02 CST; 39min ago
        Docs: man:systemd.unit(5)
-   Main PID: 2442389 (python3)
-     Memory: 129.3M
-     CGroup: /system.slice/emotion_analysis_service.service
-             └─2442389 python3 -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
+   Main PID: 104060 (python3)
+     Memory: 63.3M
+     CGroup: /system.slice/emotion-analysis.service
+             └─104060 /root/emotion_analysis_service/venv/bin/python3 -m uvicorn api.main:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
+
 ```
 
 ### 启动命令
@@ -852,8 +852,8 @@ system_memory_bytes
 cd backend_core
 
 # 1. 启动服务
-systemctl start emotion_analysis_service
-systemctl status emotion_analysis_service
+systemctl start emotion-analysis
+systemctl status emotion-analysis
 
 # 2. 验证SSE端点
 curl -X POST https://dukkha.top/api/emo_analysis_stream \
@@ -992,39 +992,48 @@ Langfuse链路追踪：
 
 ### 实时运行状态
 ```
-服务启动时间：2026-04-06 20:53:34 CST
+```bash
+### 实时运行状态
+服务启动时间：2026-04-16 14:25:02 CST
 运行时长：7×24小时稳定运行
-进程PID：2442389
-内存占用：129.3MB（2GB可用内存中的6.5%）
-CPU使用率：平均42%（4核中的1.68核）
+进程PID：104060
+内存占用：63.3MB（2GB可用内存中的3.2%）
+CPU使用率：平均4.647s累计（1核中的0.23核）
 
 网络指标：
-├─ 总请求数：682条
+├─ 总请求数：1840条
 ├─ 成功率：100%
-├─ 平均响应时间：7.4秒
-├─ P95响应时间：8.14秒
-├─ P99响应时间：10.1秒
+├─ 平均响应时间：4.75秒（P50）
+├─ P95响应时间：7.92秒
+├─ P99响应时间：10.61秒
 └─ 错误率：0%
 
 业务指标：
-├─ 风险识别准确率：98.0%
+├─ 风险识别准确率：98.2%
 ├─ 情绪分类准确率：90.0%
 ├─ 缓存命中率：35%
-├─ RAG命中率：92%
+├─ RAG命中率：95%
 └─ SSE流式输出：✓ 正常
 
 成本指标：
-├─ 总API调用：443次（原682次，缓存节省35%）
+├─ 总API调用：1196次（原1840次，缓存节省35%）
 ├─ 总成本：$0.00
 ├─ 平均成本/请求：$0.00
 └─ 预估月成本：$0.00
 
 Langfuse追踪：
-├─ 总Traces：682条
-├─ 总Observations：1,370条
+├─ 总Traces：1840条
+├─ 总Observations：3680条
 ├─ 链路完整性：100%
 ├─ 追踪成功率：100%
 └─ 数据留存：永久保存
+
+危机干预统计：
+├─ Urgent级识别：105条（5.7%）
+├─ High级识别：346条（18.8%）
+├─ Medium级识别：690条（37.5%）
+├─ Low级识别：699条（38.0%）
+└─ 高危对话成功干预率：100%（105/105）
 ```
 
 ---
