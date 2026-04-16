@@ -537,9 +537,9 @@ cpu_usage_percent 38.0
 [2026-04-15 23:59:59] System Memory: 132.7 MB | CPU: 38% | Uptime: 100%
 
 ---
-
-## 🚀 快速开始
 ```
+## 🚀 快速开始
+
 ### 环境要求
 - Python 3.10+
 - Node.js 18+
@@ -584,6 +584,7 @@ https://cloud.langfuse.com/
 cat eval/output/trace_*.json | python -m json.tool | head -100
 
 ---
+```
 ## 📡 主要 API 接口
 
 | 接口 | 方法 | 说明 | Langfuse追踪 |
