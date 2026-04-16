@@ -584,6 +584,7 @@ https://cloud.langfuse.com/
 # 或本地查看trace文件
 cat eval/output/trace_*.json | python -m json.tool | head -100
 
+---
 ## 📡 主要 API 接口
 
 | 接口 | 方法 | 说明 | Langfuse追踪 |
