@@ -1088,7 +1088,7 @@ CPU使用率：平均4.647s累计（1核中的0.23核）
 ## 📞 联系与支持
 
 - 🔗 **线上体验**：[https://dukkha.top](https://dukkha.top)
-- 📧 **邮件**：support@dukkha.top
+- 📧 **邮件**：aini1187774151@gmail.com
 - 🐛 **Bug报告**：[GitHub Issues](https://github.com/ky0404/ky0404-yuanxinyeyu/issues)
 - 💬 **讨论区**：[GitHub Discussions](https://github.com/ky0404/ky0404-yuanxinyeyu/discussions)
 
