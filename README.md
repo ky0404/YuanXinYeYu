@@ -536,10 +536,10 @@ cpu_usage_percent 38.0
 [2026-04-15 23:59:59] Avg Latency: 4.75s (P50) | P95: 7.92s | P99: 10.61s
 [2026-04-15 23:59:59] System Memory: 132.7 MB | CPU: 38% | Uptime: 100%
 
-
+---
 
 ## 🚀 快速开始
-
+```
 ### 环境要求
 - Python 3.10+
 - Node.js 18+
@@ -621,7 +621,6 @@ cat eval/output/trace_*.json | python -m json.tool | head -100
 
 
 ## 📁 项目结构（v2.6 更新）
-```
 ky0404-yuanxinyeyu/
 ├── README.md
 ├── LICENSE
@@ -704,7 +703,6 @@ ky0404-yuanxinyeyu/
         ├── main.tsx
         ├── components/
         └── styles/
-```
 ---
 
 ## 🚢 生产部署
