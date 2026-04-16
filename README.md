@@ -537,7 +537,6 @@ cpu_usage_percent 38.0
 [2026-04-15 23:59:59] System Memory: 132.7 MB | CPU: 38% | Uptime: 100%
 
 
----
 
 ## 🚀 快速开始
 
