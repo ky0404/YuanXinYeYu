@@ -550,7 +550,6 @@ cpu_usage_percent 38.0
 ```bash
 git clone https://github.com/ky0404/yuanxinyeyu.git
 cd yuanxinyeyu
-```
 
 ### 2. 启动后端
 ```bash
@@ -584,7 +583,6 @@ https://cloud.langfuse.com/
 
 # 或本地查看trace文件
 cat eval/output/trace_*.json | python -m json.tool | head -100
-```
 
 ## 📡 主要 API 接口
 
